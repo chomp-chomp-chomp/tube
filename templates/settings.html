@@ -244,13 +244,13 @@
 
     <!-- Cookies card -->
     <div class="card">
-      <h2>YouTube Cookies</h2>
+      <h2>Cookies</h2>
 
       <div class="status-row">
         {% if has_cookies %}
           <div class="dot green"></div>
           <span>Cookies loaded &mdash; {{ (cookies_size / 1024) | round(1) }} KB
-          {% if env_cookies %}<span style="color:var(--muted);">(from environment variable)</span>{% endif %}
+          {% if secret_file_cookies %}<span style="color:var(--muted);">(from Render secret file)</span>{% endif %}
           </span>
         {% else %}
           <div class="dot grey"></div>
@@ -260,8 +260,8 @@
 
       <p style="font-size:0.875rem;color:var(--muted);margin-bottom:1.25rem;line-height:1.6;">
         Upload a <code>cookies.txt</code> file exported from your browser to access
-        age-restricted videos, members-only content, and private videos that your
-        YouTube account has access to.
+        age-restricted or members-only content on YouTube, Instagram private posts,
+        and other sites that require a login.
       </p>
 
       <form method="POST" action="/settings/cookies" enctype="multipart/form-data">
@@ -286,31 +286,37 @@
     <div class="card">
       <h2>How to export cookies from your browser</h2>
       <ol class="steps">
-        <li>Install the <a href="https://chrome.google.com/webstore/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc" target="_blank" rel="noopener"><strong>Get cookies.txt LOCALLY</strong></a> extension for Chrome, or the equivalent for Firefox.</li>
-        <li>Make sure you are <strong>logged into YouTube</strong> in that browser.</li>
-        <li>Navigate to <strong>youtube.com</strong>.</li>
-        <li>Click the extension icon and choose <strong>Export</strong> for <code>youtube.com</code>.</li>
-        <li>Save the downloaded <code>youtube.com_cookies.txt</code> file and upload it above.</li>
+        <li>Install the <a href="https://chromewebstore.google.com/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc" target="_blank" rel="noopener"><strong>Get cookies.txt LOCALLY</strong></a> extension for Chrome, or the equivalent for Firefox.</li>
+        <li>Log into the site you want to download from (YouTube, Instagram, TikTok, etc.).</li>
+        <li>Navigate to that site, click the extension icon, and choose <strong>Export</strong>.</li>
+        <li>Repeat for each site you need, merging the exported files if necessary.</li>
+        <li>Upload the combined <code>cookies.txt</code> above.</li>
       </ol>
 
       <div class="alert info" style="margin-top:1.25rem;margin-bottom:0;">
-        <strong>Cookies expire.</strong> If downloads of gated content start failing again, re-export and re-upload. Your cookies give the same access as your Google account — keep the file private.
+        <strong>Cookies expire.</strong> If downloads of gated content start failing, re-export and re-upload. Treat the file like a password — it gives the same access as your logged-in browser session.
       </div>
     </div>
 
     <!-- How to persist cookies across Render restarts -->
     <div class="card">
-      <h2>Persisting cookies on Render (free plan)</h2>
+      <h2>Persisting cookies on Render</h2>
       <p style="font-size:0.875rem;color:var(--muted);line-height:1.6;margin-bottom:1rem;">
-        Render's free plan has no persistent disk — uploaded files are lost on restart.
-        To avoid re-uploading every time, paste your cookies as a base64 string in Render's environment variables.
+        Render's free plan has no persistent disk — files uploaded above are lost on restart.
+        Use Render's <strong>Secret Files</strong> feature to store your cookies permanently.
       </p>
       <ol class="steps">
-        <li>On your computer, run: <code>base64 -w 0 cookies.txt</code> (Linux/Mac) or <code>certutil -encode cookies.txt tmp.b64 && findstr /v /c:- tmp.b64</code> (Windows).</li>
-        <li>Copy the entire base64 output.</li>
-        <li>In the Render dashboard, go to your service → <strong>Environment</strong> → add variable <code>COOKIES_BASE64</code> and paste the value.</li>
-        <li>Redeploy. The app will decode and load the cookies automatically on every start.</li>
+        <li>In the Render dashboard, open your service and go to <strong>Environment</strong>.</li>
+        <li>Scroll to <strong>Secret Files</strong> and click <strong>Add Secret File</strong>.</li>
+        <li>Set the filename to exactly: <code>/etc/secrets/cookies.txt</code></li>
+        <li>Paste the full contents of your <code>cookies.txt</code> into the Contents field.</li>
+        <li>Save and redeploy — the app reads the file automatically on every start.</li>
       </ol>
+      {% if secret_file_cookies %}
+      <div class="alert success" style="margin-top:1.25rem;margin-bottom:0;">
+        Secret file detected and active.
+      </div>
+      {% endif %}
     </div>
 
     <!-- Server limits -->
