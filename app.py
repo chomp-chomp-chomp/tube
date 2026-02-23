@@ -68,8 +68,15 @@ def login_required(f):
 def _cookie_opts() -> dict:
     """Return cookiefile opt if a non-empty cookies.txt exists."""
     if COOKIES_FILE.exists() and COOKIES_FILE.stat().st_size > 0:
-        return {"cookiefile": str(COOKIES_FILE)}
+        return {"cookiefile": str(COOKIES_FILE.resolve())}
     return {}
+
+
+# YouTube extractor args that reduce bot-detection false positives.
+# tv_embedded is a client YouTube rarely challenges; web is the fallback.
+_YT_EXTRACTOR_ARGS = {
+    "extractor_args": {"youtube": {"player_client": ["tv_embedded", "web"]}},
+}
 
 
 def _sanitize(name: str) -> str:
@@ -125,6 +132,7 @@ def video_info():
             "no_warnings": True,
             "skip_download": True,
             **_cookie_opts(),
+            **_YT_EXTRACTOR_ARGS,
         }
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
@@ -284,6 +292,7 @@ def _download_worker(job_id: str, url: str, fmt: str, quality: str):
             "progress_hooks": [_make_progress_hook(job_id)],
             "max_filesize": max_bytes,
             **_cookie_opts(),
+            **_YT_EXTRACTOR_ARGS,
         }
 
         if fmt == "mp3":
