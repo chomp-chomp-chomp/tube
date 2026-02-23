@@ -135,8 +135,10 @@ def video_info():
             "uploader": info.get("uploader", ""),
             "tool": "ytdlp",
         })
-    except Exception:
-        pass  # fall through to gallery-dl
+    except yt_dlp.utils.UnsupportedError:
+        pass  # URL not recognised by yt-dlp — try gallery-dl below
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 400  # real yt-dlp error, surface it
 
     try:
         gdl_info = _gallerydl_info(url)
