@@ -25,20 +25,29 @@ PASSWORD = os.environ.get("APP_PASSWORD", "changeme")
 DOWNLOAD_DIR = Path(os.environ.get("DOWNLOAD_DIR", "./downloads"))
 DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
-COOKIES_FILE = Path(os.environ.get("COOKIES_FILE", "./cookies.txt"))
+# Anchor the default cookie path to the app directory so it doesn't shift
+# with gunicorn's working directory.
+_APP_DIR = Path(__file__).parent
+COOKIES_FILE = Path(os.environ.get("COOKIES_FILE", str(_APP_DIR / "cookies.txt")))
 MAX_ACTIVE_DOWNLOADS = int(os.environ.get("MAX_DOWNLOADS", "3"))
 MAX_FILE_SIZE_MB = int(os.environ.get("MAX_FILE_SIZE_MB", "500"))
 
 # Render Secret Files are mounted read-only at /etc/secrets/<filename>.
-# On startup, copy the secret file to the writable COOKIES_FILE path so
-# yt-dlp can read *and* write back the updated cookie jar without hitting
-# a read-only filesystem error.
+# On startup, copy to the writable COOKIES_FILE so yt-dlp can write the
+# updated cookie jar back without hitting a read-only filesystem error.
 _RENDER_SECRETS_COOKIES = Path("/etc/secrets/cookies.txt")
 if _RENDER_SECRETS_COOKIES.exists() and _RENDER_SECRETS_COOKIES.stat().st_size > 0:
     try:
         COOKIES_FILE.write_bytes(_RENDER_SECRETS_COOKIES.read_bytes())
+        print(f"[chompy] Loaded cookies from Render secret file → {COOKIES_FILE} "
+              f"({COOKIES_FILE.stat().st_size} bytes)")
     except Exception as _e:
-        print(f"Warning: could not copy Render secret cookies: {_e}")
+        print(f"[chompy] WARNING: could not copy Render secret cookies: {_e}")
+elif COOKIES_FILE.exists() and COOKIES_FILE.stat().st_size > 0:
+    print(f"[chompy] Using existing cookies file at {COOKIES_FILE} "
+          f"({COOKIES_FILE.stat().st_size} bytes)")
+else:
+    print("[chompy] No cookies file found — only public content will be accessible")
 
 # In-memory job tracker: job_id -> {"status", "progress", "filename", "error"}
 jobs: dict[str, dict] = {}
@@ -76,11 +85,12 @@ def _is_youtube(url: str) -> bool:
     return any(d in url for d in ("youtube.com", "youtu.be", "youtube-nocookie.com"))
 
 
-# YouTube extractor args that reduce bot-detection false positives.
-# tv_embedded is a client YouTube rarely challenges; web is the fallback.
+# YouTube extractor args to reduce bot-detection false positives.
+# ios acts like a native Apple app — YouTube rarely challenges it.
+# tv_embedded and web are fallbacks.
 # Only applied to YouTube URLs — Instagram/TikTok don't need these.
 _YT_EXTRACTOR_ARGS = {
-    "extractor_args": {"youtube": {"player_client": ["tv_embedded", "web"]}},
+    "extractor_args": {"youtube": {"player_client": ["ios", "tv_embedded", "web"]}},
 }
 
 
