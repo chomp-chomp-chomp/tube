@@ -3,15 +3,13 @@ services:
     name: chompy
     env: python
     plan: free
-    buildCommand: pip install -r requirements.txt
+    buildCommand: pip install -r requirements.txt && apt-get install -y ffmpeg
     startCommand: gunicorn --workers 1 --threads 4 --bind 0.0.0.0:$PORT app:app
     envVars:
       - key: APP_PASSWORD
         sync: false          # Set this in the Render dashboard — keep it secret
       - key: SECRET_KEY
         generateValue: true  # Render generates a random value automatically
-      - key: COOKIES_BASE64
-        sync: false          # Optional: paste base64-encoded cookies.txt here
       - key: MAX_FILE_SIZE_MB
         value: 500
       - key: MAX_DOWNLOADS
