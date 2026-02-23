@@ -1,9 +1,12 @@
 import base64
 import os
 import re
+import shutil
+import subprocess
 import uuid
 import threading
 import time
+import zipfile
 from pathlib import Path
 from functools import wraps
 
@@ -130,7 +133,14 @@ def video_info():
             "thumbnail": info.get("thumbnail", ""),
             "duration": info.get("duration", 0),
             "uploader": info.get("uploader", ""),
+            "tool": "ytdlp",
         })
+    except Exception:
+        pass  # fall through to gallery-dl
+
+    try:
+        gdl_info = _gallerydl_info(url)
+        return jsonify(gdl_info)
     except Exception as exc:
         return jsonify({"error": str(exc)}), 400
 
@@ -142,6 +152,7 @@ def start_download():
     url = request.json.get("url", "").strip()
     fmt = request.json.get("format", "mp4")    # "mp4" or "mp3"
     quality = request.json.get("quality", "best")  # "best" | "1080" | "720" | "480"
+    tool = request.json.get("tool", "ytdlp")       # "ytdlp" or "gallerydl"
 
     if not url:
         return jsonify({"error": "No URL provided."}), 400
@@ -152,7 +163,10 @@ def start_download():
     with jobs_lock:
         jobs[job_id] = {"status": "queued", "progress": 0, "filename": None, "error": None}
 
-    t = threading.Thread(target=_download_worker, args=(job_id, url, fmt, quality), daemon=True)
+    if tool == "gallerydl":
+        t = threading.Thread(target=_gallerydl_worker, args=(job_id, url), daemon=True)
+    else:
+        t = threading.Thread(target=_download_worker, args=(job_id, url, fmt, quality), daemon=True)
     t.start()
     return jsonify({"job_id": job_id})
 
@@ -283,11 +297,12 @@ def _download_worker(job_id: str, url: str, fmt: str, quality: str):
             }
         else:
             if quality == "best":
-                fmt_str = "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best"
+                fmt_str = "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best"
             else:
                 fmt_str = (
-                    f"bestvideo[height<={quality}][ext=mp4]"
-                    f"+bestaudio[ext=m4a]/best[height<={quality}][ext=mp4]/best"
+                    f"bestvideo[height<={quality}][ext=mp4]+bestaudio[ext=m4a]"
+                    f"/bestvideo[height<={quality}]+bestaudio"
+                    f"/best[height<={quality}]/best"
                 )
             ydl_opts = {
                 **base_opts,
@@ -311,6 +326,91 @@ def _download_worker(job_id: str, url: str, fmt: str, quality: str):
         with jobs_lock:
             jobs[job_id]["status"] = "error"
             jobs[job_id]["error"] = str(exc)
+    finally:
+        _dl_semaphore.release()
+
+
+# ---------------------------------------------------------------------------
+# gallery-dl helpers
+# ---------------------------------------------------------------------------
+
+def _gdl_cookie_args() -> list:
+    if COOKIES_FILE.exists() and COOKIES_FILE.stat().st_size > 0:
+        return ["--cookies", str(COOKIES_FILE)]
+    return []
+
+
+def _gallerydl_info(url: str) -> dict:
+    """Return basic metadata for a gallery-dl-supported URL."""
+    result = subprocess.run(
+        ["gallery-dl", "--get-urls", "--quiet", *_gdl_cookie_args(), url],
+        capture_output=True, text=True, timeout=30,
+    )
+    urls = [l.strip() for l in result.stdout.splitlines() if l.strip()]
+    if not urls:
+        stderr = result.stderr.strip()
+        raise ValueError(stderr or "No downloadable content found")
+    count = len(urls)
+    return {
+        "title": f"Gallery — {count} item{'s' if count != 1 else ''}",
+        "thumbnail": urls[0],
+        "duration": 0,
+        "uploader": "",
+        "tool": "gallerydl",
+        "count": count,
+    }
+
+
+def _gallerydl_worker(job_id: str, url: str):
+    _dl_semaphore.acquire()
+    try:
+        with jobs_lock:
+            jobs[job_id]["status"] = "starting"
+
+        uid = job_id[:8]
+        dest_dir = DOWNLOAD_DIR / f"gallery_{uid}"
+        dest_dir.mkdir(parents=True, exist_ok=True)
+
+        with jobs_lock:
+            jobs[job_id]["status"] = "downloading"
+
+        result = subprocess.run(
+            ["gallery-dl", "--quiet", "--dest", str(dest_dir),
+             *_gdl_cookie_args(), url],
+            capture_output=True, text=True, timeout=1800,
+        )
+        if result.returncode != 0:
+            raise ValueError(result.stderr.strip() or "gallery-dl failed")
+
+        files = sorted(f for f in dest_dir.rglob("*") if f.is_file())
+        if not files:
+            raise ValueError("No files were downloaded")
+
+        with jobs_lock:
+            jobs[job_id]["status"] = "processing"
+
+        if len(files) == 1:
+            src = files[0]
+            filename = f"{_sanitize(src.stem)} [{uid}]{src.suffix}"
+            src.rename(DOWNLOAD_DIR / filename)
+            shutil.rmtree(dest_dir, ignore_errors=True)
+        else:
+            filename = f"gallery_{uid}.zip"
+            with zipfile.ZipFile(DOWNLOAD_DIR / filename, "w", zipfile.ZIP_DEFLATED) as zf:
+                for f in files:
+                    zf.write(f, f.relative_to(dest_dir))
+            shutil.rmtree(dest_dir, ignore_errors=True)
+
+        with jobs_lock:
+            jobs[job_id]["status"] = "done"
+            jobs[job_id]["progress"] = 100
+            jobs[job_id]["filename"] = filename
+
+    except Exception as exc:
+        with jobs_lock:
+            jobs[job_id]["status"] = "error"
+            jobs[job_id]["error"] = str(exc)
+        shutil.rmtree(DOWNLOAD_DIR / f"gallery_{job_id[:8]}", ignore_errors=True)
     finally:
         _dl_semaphore.release()
 
