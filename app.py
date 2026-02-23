@@ -308,11 +308,10 @@ def _download_worker(job_id: str, url: str, fmt: str, quality: str):
             }
         else:
             if quality == "best":
-                fmt_str = "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best"
+                fmt_str = "bestvideo+bestaudio/best"
             else:
                 fmt_str = (
-                    f"bestvideo[height<={quality}][ext=mp4]+bestaudio[ext=m4a]"
-                    f"/bestvideo[height<={quality}]+bestaudio"
+                    f"bestvideo[height<={quality}]+bestaudio"
                     f"/best[height<={quality}]/best"
                 )
             ydl_opts = {
