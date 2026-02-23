@@ -29,10 +29,16 @@ COOKIES_FILE = Path(os.environ.get("COOKIES_FILE", "./cookies.txt"))
 MAX_ACTIVE_DOWNLOADS = int(os.environ.get("MAX_DOWNLOADS", "3"))
 MAX_FILE_SIZE_MB = int(os.environ.get("MAX_FILE_SIZE_MB", "500"))
 
-# Render Secret Files are mounted at /etc/secrets/<filename>.
-# We prefer that path over the local upload path so cookies survive restarts
-# without any base64 gymnastics.
+# Render Secret Files are mounted read-only at /etc/secrets/<filename>.
+# On startup, copy the secret file to the writable COOKIES_FILE path so
+# yt-dlp can read *and* write back the updated cookie jar without hitting
+# a read-only filesystem error.
 _RENDER_SECRETS_COOKIES = Path("/etc/secrets/cookies.txt")
+if _RENDER_SECRETS_COOKIES.exists() and _RENDER_SECRETS_COOKIES.stat().st_size > 0:
+    try:
+        COOKIES_FILE.write_bytes(_RENDER_SECRETS_COOKIES.read_bytes())
+    except Exception as _e:
+        print(f"Warning: could not copy Render secret cookies: {_e}")
 
 # In-memory job tracker: job_id -> {"status", "progress", "filename", "error"}
 jobs: dict[str, dict] = {}
@@ -60,10 +66,9 @@ def login_required(f):
 # ---------------------------------------------------------------------------
 
 def _cookie_opts() -> dict:
-    """Return cookiefile opt, preferring the Render secret file if present."""
-    for candidate in (_RENDER_SECRETS_COOKIES, COOKIES_FILE):
-        if candidate.exists() and candidate.stat().st_size > 0:
-            return {"cookiefile": str(candidate.resolve())}
+    """Return cookiefile opt if a non-empty cookies file exists."""
+    if COOKIES_FILE.exists() and COOKIES_FILE.stat().st_size > 0:
+        return {"cookiefile": str(COOKIES_FILE.resolve())}
     return {}
 
 
@@ -219,16 +224,8 @@ def settings():
         _RENDER_SECRETS_COOKIES.exists()
         and _RENDER_SECRETS_COOKIES.stat().st_size > 0
     )
-    local_cookies_active = (
-        not secret_file_active
-        and COOKIES_FILE.exists()
-        and COOKIES_FILE.stat().st_size > 0
-    )
-    has_cookies = secret_file_active or local_cookies_active
-    cookies_size = (
-        _RENDER_SECRETS_COOKIES.stat().st_size if secret_file_active
-        else (COOKIES_FILE.stat().st_size if local_cookies_active else 0)
-    )
+    has_cookies = COOKIES_FILE.exists() and COOKIES_FILE.stat().st_size > 0
+    cookies_size = COOKIES_FILE.stat().st_size if has_cookies else 0
     msg = request.args.get("msg", "")
     return render_template(
         "settings.html",
