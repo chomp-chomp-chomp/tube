@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Tube Downloader</title>
+  <title>Chompy</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -274,7 +274,7 @@
         <circle cx="24" cy="24" r="22" fill="#ff4444"/>
         <polygon points="19,15 37,24 19,33" fill="white"/>
       </svg>
-      Tube Downloader
+      Chompy
     </div>
     <div style="display:flex;gap:0.5rem;align-items:center;">
       <a href="/settings" class="logout">Settings</a>
@@ -367,6 +367,7 @@
     const jobError     = document.getElementById('job-error');
 
     let pollTimer = null;
+    let currentTool = 'ytdlp';
 
     // Hide quality selector for MP3
     document.querySelectorAll('input[name="format"]').forEach(r => {
@@ -399,6 +400,10 @@
       hideError(fetchErr);
       preview.style.display = 'none';
       btnDl.disabled = true;
+      btnDl.textContent = 'Download';
+      currentTool = 'ytdlp';
+      document.getElementById('fmt-seg').style.display = '';
+      qualSeg.style.display = '';
       btnFetch.disabled = true;
       btnFetch.textContent = 'Loading…';
 
@@ -411,11 +416,17 @@
         const data = await res.json();
         if (!res.ok || data.error) throw new Error(data.error || 'Failed to fetch info');
 
+        currentTool = data.tool || 'ytdlp';
         document.getElementById('preview-thumb').src = data.thumbnail || '';
         document.getElementById('preview-title').textContent = data.title || 'Unknown';
         document.getElementById('preview-sub').textContent =
           [data.uploader, fmtDuration(data.duration)].filter(Boolean).join(' · ');
         preview.style.display = 'flex';
+
+        const isGallery = currentTool === 'gallerydl';
+        document.getElementById('fmt-seg').style.display  = isGallery ? 'none' : '';
+        qualSeg.style.display = isGallery ? 'none' : '';
+        btnDl.textContent = isGallery ? 'Download gallery' : 'Download';
         btnDl.disabled = false;
       } catch (err) {
         showError(fetchErr, err.message);
@@ -447,7 +458,7 @@
         const res = await fetch('/download', {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({url, format: fmt, quality})
+          body: JSON.stringify({url, format: fmt, quality, tool: currentTool})
         });
         const data = await res.json();
         if (!res.ok || data.error) throw new Error(data.error || 'Failed to start download');
