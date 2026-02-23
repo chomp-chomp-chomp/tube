@@ -1,0 +1,503 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Tube Downloader</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #0f0f0f;
+      --surface: #1a1a1a;
+      --surface2: #242424;
+      --border: #2e2e2e;
+      --accent: #ff4444;
+      --accent-hover: #ff2222;
+      --green: #22c55e;
+      --text: #e8e8e8;
+      --muted: #888;
+      --radius: 12px;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      min-height: 100dvh;
+      padding: 1.5rem 1rem 4rem;
+    }
+
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      max-width: 640px;
+      margin: 0 auto 2rem;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 0.6rem;
+      font-size: 1.1rem;
+      font-weight: 700;
+    }
+
+    .brand svg { width: 28px; height: 28px; }
+
+    .logout {
+      font-size: 0.8rem;
+      color: var(--muted);
+      text-decoration: none;
+      padding: 0.35rem 0.75rem;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      transition: color 0.2s, border-color 0.2s;
+    }
+    .logout:hover { color: var(--text); border-color: var(--muted); }
+
+    main {
+      max-width: 640px;
+      margin: 0 auto;
+    }
+
+    /* ---- Card ---- */
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 1.75rem 1.5rem;
+      margin-bottom: 1.25rem;
+    }
+
+    h2 { font-size: 1rem; font-weight: 600; margin-bottom: 1rem; }
+
+    /* ---- URL input ---- */
+    .url-row {
+      display: flex;
+      gap: 0.5rem;
+    }
+
+    .url-row input {
+      flex: 1;
+      padding: 0.75rem 1rem;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text);
+      font-size: 0.95rem;
+      outline: none;
+      transition: border-color 0.2s;
+      min-width: 0;
+    }
+    .url-row input:focus { border-color: var(--accent); }
+    .url-row input::placeholder { color: var(--muted); }
+
+    .btn-fetch {
+      padding: 0.75rem 1.1rem;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text);
+      font-size: 0.9rem;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: background 0.2s;
+      flex-shrink: 0;
+    }
+    .btn-fetch:hover { background: #303030; }
+    .btn-fetch:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    /* ---- Format / Quality row ---- */
+    .options-row {
+      display: flex;
+      gap: 0.75rem;
+      margin-top: 1rem;
+      flex-wrap: wrap;
+    }
+
+    .seg {
+      display: flex;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+
+    .seg label {
+      padding: 0.55rem 0.9rem;
+      font-size: 0.85rem;
+      cursor: pointer;
+      user-select: none;
+      color: var(--muted);
+      transition: background 0.15s, color 0.15s;
+    }
+
+    .seg input[type="radio"] { display: none; }
+
+    .seg input[type="radio"]:checked + label {
+      background: var(--accent);
+      color: #fff;
+    }
+
+    /* ---- Preview ---- */
+    #preview {
+      display: none;
+      align-items: center;
+      gap: 1rem;
+      padding-top: 1.25rem;
+      margin-top: 1.25rem;
+      border-top: 1px solid var(--border);
+    }
+
+    #preview img {
+      width: 100px;
+      height: 56px;
+      object-fit: cover;
+      border-radius: 6px;
+      flex-shrink: 0;
+      background: var(--surface2);
+    }
+
+    .preview-meta { flex: 1; min-width: 0; }
+    .preview-title {
+      font-weight: 600;
+      font-size: 0.9rem;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .preview-sub { font-size: 0.8rem; color: var(--muted); margin-top: 0.2rem; }
+
+    /* ---- Download button ---- */
+    .btn-dl {
+      width: 100%;
+      margin-top: 1.25rem;
+      padding: 0.85rem;
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      font-size: 1rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    .btn-dl:hover { background: var(--accent-hover); }
+    .btn-dl:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btn-dl:active { transform: scale(0.98); }
+
+    /* ---- Progress card ---- */
+    #progress-card { display: none; }
+
+    .job-item {
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+    }
+
+    .job-top {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 0.85rem;
+    }
+
+    .job-title { font-weight: 500; }
+    .job-badge {
+      font-size: 0.75rem;
+      padding: 0.2rem 0.55rem;
+      border-radius: 999px;
+      background: var(--surface2);
+      color: var(--muted);
+      border: 1px solid var(--border);
+    }
+    .job-badge.done { background: rgba(34,197,94,0.15); color: var(--green); border-color: rgba(34,197,94,0.3); }
+    .job-badge.error { background: rgba(255,68,68,0.12); color: #ff8888; border-color: rgba(255,68,68,0.3); }
+
+    .progress-bar-wrap {
+      width: 100%;
+      height: 6px;
+      background: var(--border);
+      border-radius: 99px;
+      overflow: hidden;
+    }
+
+    .progress-bar {
+      height: 100%;
+      background: var(--accent);
+      border-radius: 99px;
+      width: 0%;
+      transition: width 0.4s ease;
+    }
+    .progress-bar.done { background: var(--green); }
+
+    .btn-save {
+      display: none;
+      padding: 0.6rem 1rem;
+      background: var(--green);
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      font-size: 0.9rem;
+      font-weight: 600;
+      cursor: pointer;
+      text-decoration: none;
+      text-align: center;
+      transition: opacity 0.2s;
+    }
+    .btn-save:hover { opacity: 0.85; }
+
+    /* ---- Error box ---- */
+    .error-box {
+      background: rgba(255,68,68,0.1);
+      border: 1px solid rgba(255,68,68,0.3);
+      border-radius: 8px;
+      padding: 0.65rem 0.9rem;
+      font-size: 0.85rem;
+      color: #ff9999;
+      display: none;
+      margin-top: 0.75rem;
+    }
+
+    @media (max-width: 400px) {
+      .url-row { flex-direction: column; }
+      .btn-fetch { width: 100%; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <svg viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <circle cx="24" cy="24" r="22" fill="#ff4444"/>
+        <polygon points="19,15 37,24 19,33" fill="white"/>
+      </svg>
+      Tube Downloader
+    </div>
+    <div style="display:flex;gap:0.5rem;align-items:center;">
+      <a href="/settings" class="logout">Settings</a>
+      <a href="/logout" class="logout">Log out</a>
+    </div>
+  </header>
+
+  <main>
+    <!-- Input card -->
+    <div class="card">
+      <h2>Paste a YouTube URL</h2>
+
+      <div class="url-row">
+        <input
+          type="url"
+          id="url-input"
+          placeholder="https://www.youtube.com/watch?v=..."
+          autocomplete="off"
+          spellcheck="false"
+        />
+        <button class="btn-fetch" id="btn-fetch">Preview</button>
+      </div>
+
+      <div class="options-row">
+        <!-- Format -->
+        <div class="seg" id="fmt-seg">
+          <input type="radio" name="format" id="fmt-mp4" value="mp4" checked />
+          <label for="fmt-mp4">MP4</label>
+          <input type="radio" name="format" id="fmt-mp3" value="mp3" />
+          <label for="fmt-mp3">MP3</label>
+        </div>
+
+        <!-- Quality (hidden for MP3) -->
+        <div class="seg" id="qual-seg">
+          <input type="radio" name="quality" id="q-best" value="best" checked />
+          <label for="q-best">Best</label>
+          <input type="radio" name="quality" id="q-1080" value="1080" />
+          <label for="q-1080">1080p</label>
+          <input type="radio" name="quality" id="q-720" value="720" />
+          <label for="q-720">720p</label>
+          <input type="radio" name="quality" id="q-480" value="480" />
+          <label for="q-480">480p</label>
+        </div>
+      </div>
+
+      <!-- Video preview -->
+      <div id="preview">
+        <img id="preview-thumb" src="" alt="thumbnail" />
+        <div class="preview-meta">
+          <div class="preview-title" id="preview-title"></div>
+          <div class="preview-sub" id="preview-sub"></div>
+        </div>
+      </div>
+
+      <div class="error-box" id="fetch-error"></div>
+
+      <button class="btn-dl" id="btn-dl" disabled>Download</button>
+    </div>
+
+    <!-- Progress card -->
+    <div class="card" id="progress-card">
+      <h2>Download progress</h2>
+      <div class="job-item" id="job-item">
+        <div class="job-top">
+          <span class="job-title" id="job-title">Starting&hellip;</span>
+          <span class="job-badge" id="job-badge">queued</span>
+        </div>
+        <div class="progress-bar-wrap">
+          <div class="progress-bar" id="job-bar"></div>
+        </div>
+        <a class="btn-save" id="btn-save">Save file</a>
+      </div>
+      <div class="error-box" id="job-error"></div>
+    </div>
+  </main>
+
+  <script>
+    const urlInput  = document.getElementById('url-input');
+    const btnFetch  = document.getElementById('btn-fetch');
+    const btnDl     = document.getElementById('btn-dl');
+    const preview   = document.getElementById('preview');
+    const fetchErr  = document.getElementById('fetch-error');
+    const qualSeg   = document.getElementById('qual-seg');
+
+    const progressCard = document.getElementById('progress-card');
+    const jobTitle     = document.getElementById('job-title');
+    const jobBadge     = document.getElementById('job-badge');
+    const jobBar       = document.getElementById('job-bar');
+    const btnSave      = document.getElementById('btn-save');
+    const jobError     = document.getElementById('job-error');
+
+    let pollTimer = null;
+
+    // Hide quality selector for MP3
+    document.querySelectorAll('input[name="format"]').forEach(r => {
+      r.addEventListener('change', () => {
+        qualSeg.style.display = r.value === 'mp3' ? 'none' : '';
+      });
+    });
+
+    // Utility
+    function fmtDuration(s) {
+      if (!s) return '';
+      const m = Math.floor(s / 60), sec = s % 60;
+      return `${m}:${String(sec).padStart(2,'0')}`;
+    }
+
+    function showError(el, msg) {
+      el.textContent = msg;
+      el.style.display = 'block';
+    }
+    function hideError(el) { el.style.display = 'none'; }
+
+    // --- Fetch video info ---
+    btnFetch.addEventListener('click', fetchInfo);
+    urlInput.addEventListener('keydown', e => { if (e.key === 'Enter') fetchInfo(); });
+
+    async function fetchInfo() {
+      const url = urlInput.value.trim();
+      if (!url) return;
+
+      hideError(fetchErr);
+      preview.style.display = 'none';
+      btnDl.disabled = true;
+      btnFetch.disabled = true;
+      btnFetch.textContent = 'Loading…';
+
+      try {
+        const res = await fetch('/info', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({url})
+        });
+        const data = await res.json();
+        if (!res.ok || data.error) throw new Error(data.error || 'Failed to fetch info');
+
+        document.getElementById('preview-thumb').src = data.thumbnail || '';
+        document.getElementById('preview-title').textContent = data.title || 'Unknown';
+        document.getElementById('preview-sub').textContent =
+          [data.uploader, fmtDuration(data.duration)].filter(Boolean).join(' · ');
+        preview.style.display = 'flex';
+        btnDl.disabled = false;
+      } catch (err) {
+        showError(fetchErr, err.message);
+      } finally {
+        btnFetch.disabled = false;
+        btnFetch.textContent = 'Preview';
+      }
+    }
+
+    // --- Start download ---
+    btnDl.addEventListener('click', async () => {
+      const url = urlInput.value.trim();
+      if (!url) return;
+
+      const fmt     = document.querySelector('input[name="format"]:checked').value;
+      const quality = document.querySelector('input[name="quality"]:checked').value;
+
+      btnDl.disabled = true;
+      hideError(jobError);
+      btnSave.style.display = 'none';
+      jobBar.style.width = '0%';
+      jobBar.classList.remove('done');
+      jobBadge.className = 'job-badge';
+      jobBadge.textContent = 'queued';
+      jobTitle.textContent = 'Starting…';
+      progressCard.style.display = 'block';
+
+      try {
+        const res = await fetch('/download', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({url, format: fmt, quality})
+        });
+        const data = await res.json();
+        if (!res.ok || data.error) throw new Error(data.error || 'Failed to start download');
+        pollStatus(data.job_id);
+      } catch (err) {
+        showError(jobError, err.message);
+        btnDl.disabled = false;
+      }
+    });
+
+    // --- Poll job status ---
+    function pollStatus(jobId) {
+      if (pollTimer) clearInterval(pollTimer);
+
+      pollTimer = setInterval(async () => {
+        try {
+          const res  = await fetch(`/status/${jobId}`);
+          const data = await res.json();
+
+          const pct = Math.round(data.progress || 0);
+          jobBar.style.width = `${pct}%`;
+          jobBadge.textContent = data.status;
+
+          const labels = {
+            queued: 'Queued',
+            starting: 'Starting…',
+            downloading: `Downloading — ${pct}%`,
+            processing: 'Processing…',
+            done: 'Done',
+            error: 'Error',
+          };
+          jobTitle.textContent = labels[data.status] || data.status;
+
+          if (data.status === 'done') {
+            clearInterval(pollTimer);
+            jobBar.style.width = '100%';
+            jobBar.classList.add('done');
+            jobBadge.className = 'job-badge done';
+            btnSave.href = `/file/${jobId}`;
+            btnSave.style.display = 'block';
+            btnDl.disabled = false;
+          } else if (data.status === 'error') {
+            clearInterval(pollTimer);
+            jobBadge.className = 'job-badge error';
+            showError(jobError, data.error || 'An unknown error occurred.');
+            btnDl.disabled = false;
+          }
+        } catch (_) { /* network blip, keep polling */ }
+      }, 1000);
+    }
+  </script>
+</body>
+</html>
