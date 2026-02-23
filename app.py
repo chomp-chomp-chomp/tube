@@ -1,4 +1,3 @@
-import base64
 import os
 import re
 import shutil
@@ -30,15 +29,10 @@ COOKIES_FILE = Path(os.environ.get("COOKIES_FILE", "./cookies.txt"))
 MAX_ACTIVE_DOWNLOADS = int(os.environ.get("MAX_DOWNLOADS", "3"))
 MAX_FILE_SIZE_MB = int(os.environ.get("MAX_FILE_SIZE_MB", "500"))
 
-# On startup: write cookies from COOKIES_BASE64 env var if present.
-# This survives Render free-plan restarts (no persistent disk) because
-# the env var is always available, while an uploaded file would be lost.
-_cookies_b64 = os.environ.get("COOKIES_BASE64", "").strip()
-if _cookies_b64:
-    try:
-        COOKIES_FILE.write_bytes(base64.b64decode(_cookies_b64))
-    except Exception as _e:
-        print(f"Warning: could not decode COOKIES_BASE64: {_e}")
+# Render Secret Files are mounted at /etc/secrets/<filename>.
+# We prefer that path over the local upload path so cookies survive restarts
+# without any base64 gymnastics.
+_RENDER_SECRETS_COOKIES = Path("/etc/secrets/cookies.txt")
 
 # In-memory job tracker: job_id -> {"status", "progress", "filename", "error"}
 jobs: dict[str, dict] = {}
@@ -66,14 +60,20 @@ def login_required(f):
 # ---------------------------------------------------------------------------
 
 def _cookie_opts() -> dict:
-    """Return cookiefile opt if a non-empty cookies.txt exists."""
-    if COOKIES_FILE.exists() and COOKIES_FILE.stat().st_size > 0:
-        return {"cookiefile": str(COOKIES_FILE.resolve())}
+    """Return cookiefile opt, preferring the Render secret file if present."""
+    for candidate in (_RENDER_SECRETS_COOKIES, COOKIES_FILE):
+        if candidate.exists() and candidate.stat().st_size > 0:
+            return {"cookiefile": str(candidate.resolve())}
     return {}
+
+
+def _is_youtube(url: str) -> bool:
+    return any(d in url for d in ("youtube.com", "youtu.be", "youtube-nocookie.com"))
 
 
 # YouTube extractor args that reduce bot-detection false positives.
 # tv_embedded is a client YouTube rarely challenges; web is the fallback.
+# Only applied to YouTube URLs — Instagram/TikTok don't need these.
 _YT_EXTRACTOR_ARGS = {
     "extractor_args": {"youtube": {"player_client": ["tv_embedded", "web"]}},
 }
@@ -132,7 +132,7 @@ def video_info():
             "no_warnings": True,
             "skip_download": True,
             **_cookie_opts(),
-            **_YT_EXTRACTOR_ARGS,
+            **(  _YT_EXTRACTOR_ARGS if _is_youtube(url) else {}),
         }
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
@@ -215,16 +215,27 @@ def serve_file(job_id):
 @app.route("/settings")
 @login_required
 def settings():
-    has_cookies = COOKIES_FILE.exists() and COOKIES_FILE.stat().st_size > 0
-    cookies_size = COOKIES_FILE.stat().st_size if has_cookies else 0
+    secret_file_active = (
+        _RENDER_SECRETS_COOKIES.exists()
+        and _RENDER_SECRETS_COOKIES.stat().st_size > 0
+    )
+    local_cookies_active = (
+        not secret_file_active
+        and COOKIES_FILE.exists()
+        and COOKIES_FILE.stat().st_size > 0
+    )
+    has_cookies = secret_file_active or local_cookies_active
+    cookies_size = (
+        _RENDER_SECRETS_COOKIES.stat().st_size if secret_file_active
+        else (COOKIES_FILE.stat().st_size if local_cookies_active else 0)
+    )
     msg = request.args.get("msg", "")
-    env_cookies = bool(os.environ.get("COOKIES_BASE64", "").strip())
     return render_template(
         "settings.html",
         has_cookies=has_cookies,
         cookies_size=cookies_size,
         msg=msg,
-        env_cookies=env_cookies,
+        secret_file_cookies=secret_file_active,
         max_file_size_mb=MAX_FILE_SIZE_MB,
         max_downloads=MAX_ACTIVE_DOWNLOADS,
     )
@@ -292,7 +303,7 @@ def _download_worker(job_id: str, url: str, fmt: str, quality: str):
             "progress_hooks": [_make_progress_hook(job_id)],
             "max_filesize": max_bytes,
             **_cookie_opts(),
-            **_YT_EXTRACTOR_ARGS,
+            **(  _YT_EXTRACTOR_ARGS if _is_youtube(url) else {}),
         }
 
         if fmt == "mp3":
