@@ -1,3 +1,4 @@
+import base64
 import os
 import re
 import uuid
@@ -22,9 +23,26 @@ PASSWORD = os.environ.get("APP_PASSWORD", "changeme")
 DOWNLOAD_DIR = Path(os.environ.get("DOWNLOAD_DIR", "./downloads"))
 DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
+COOKIES_FILE = Path(os.environ.get("COOKIES_FILE", "./cookies.txt"))
+MAX_ACTIVE_DOWNLOADS = int(os.environ.get("MAX_DOWNLOADS", "3"))
+MAX_FILE_SIZE_MB = int(os.environ.get("MAX_FILE_SIZE_MB", "500"))
+
+# On startup: write cookies from COOKIES_BASE64 env var if present.
+# This survives Render free-plan restarts (no persistent disk) because
+# the env var is always available, while an uploaded file would be lost.
+_cookies_b64 = os.environ.get("COOKIES_BASE64", "").strip()
+if _cookies_b64:
+    try:
+        COOKIES_FILE.write_bytes(base64.b64decode(_cookies_b64))
+    except Exception as _e:
+        print(f"Warning: could not decode COOKIES_BASE64: {_e}")
+
 # In-memory job tracker: job_id -> {"status", "progress", "filename", "error"}
 jobs: dict[str, dict] = {}
 jobs_lock = threading.Lock()
+
+# Semaphore caps concurrent downloads so the server isn't overwhelmed
+_dl_semaphore = threading.Semaphore(MAX_ACTIVE_DOWNLOADS)
 
 
 # ---------------------------------------------------------------------------
@@ -41,7 +59,23 @@ def login_required(f):
 
 
 # ---------------------------------------------------------------------------
-# Routes
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _cookie_opts() -> dict:
+    """Return cookiefile opt if a non-empty cookies.txt exists."""
+    if COOKIES_FILE.exists() and COOKIES_FILE.stat().st_size > 0:
+        return {"cookiefile": str(COOKIES_FILE)}
+    return {}
+
+
+def _sanitize(name: str) -> str:
+    """Remove characters that are unsafe in filenames."""
+    return re.sub(r'[\\/*?:"<>|]', "_", name)
+
+
+# ---------------------------------------------------------------------------
+# Routes – auth
 # ---------------------------------------------------------------------------
 
 @app.route("/login", methods=["GET", "POST"])
@@ -64,6 +98,10 @@ def logout():
     return redirect(url_for("login"))
 
 
+# ---------------------------------------------------------------------------
+# Routes – main
+# ---------------------------------------------------------------------------
+
 @app.route("/")
 @login_required
 def index():
@@ -79,7 +117,12 @@ def video_info():
         return jsonify({"error": "No URL provided."}), 400
 
     try:
-        ydl_opts = {"quiet": True, "no_warnings": True, "skip_download": True}
+        ydl_opts = {
+            "quiet": True,
+            "no_warnings": True,
+            "skip_download": True,
+            **_cookie_opts(),
+        }
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
         return jsonify({
@@ -97,8 +140,8 @@ def video_info():
 def start_download():
     """Kick off a background download job and return a job_id."""
     url = request.json.get("url", "").strip()
-    fmt = request.json.get("format", "mp4")   # "mp4" or "mp3"
-    quality = request.json.get("quality", "best")  # "best" | "1080" | "720" | "480" | "360"
+    fmt = request.json.get("format", "mp4")    # "mp4" or "mp3"
+    quality = request.json.get("quality", "best")  # "best" | "1080" | "720" | "480"
 
     if not url:
         return jsonify({"error": "No URL provided."}), 400
@@ -142,6 +185,51 @@ def serve_file(job_id):
 
 
 # ---------------------------------------------------------------------------
+# Routes – settings
+# ---------------------------------------------------------------------------
+
+@app.route("/settings")
+@login_required
+def settings():
+    has_cookies = COOKIES_FILE.exists() and COOKIES_FILE.stat().st_size > 0
+    cookies_size = COOKIES_FILE.stat().st_size if has_cookies else 0
+    msg = request.args.get("msg", "")
+    env_cookies = bool(os.environ.get("COOKIES_BASE64", "").strip())
+    return render_template(
+        "settings.html",
+        has_cookies=has_cookies,
+        cookies_size=cookies_size,
+        msg=msg,
+        env_cookies=env_cookies,
+        max_file_size_mb=MAX_FILE_SIZE_MB,
+        max_downloads=MAX_ACTIVE_DOWNLOADS,
+    )
+
+
+@app.route("/settings/cookies", methods=["POST"])
+@login_required
+def upload_cookies():
+    f = request.files.get("cookies")
+    if not f or not f.filename:
+        return redirect(url_for("settings", msg="no_file"))
+    content = f.read()
+    if len(content) > 10 * 1024 * 1024:  # 10 MB sanity limit for a cookie file
+        return redirect(url_for("settings", msg="too_large"))
+    COOKIES_FILE.write_bytes(content)
+    return redirect(url_for("settings", msg="saved"))
+
+
+@app.route("/settings/cookies/clear", methods=["POST"])
+@login_required
+def clear_cookies():
+    try:
+        COOKIES_FILE.unlink(missing_ok=True)
+    except OSError:
+        pass
+    return redirect(url_for("settings", msg="cleared"))
+
+
+# ---------------------------------------------------------------------------
 # Background worker
 # ---------------------------------------------------------------------------
 
@@ -164,21 +252,27 @@ def _make_progress_hook(job_id):
     return hook
 
 
-def _sanitize(name: str) -> str:
-    """Remove characters that are unsafe in filenames."""
-    return re.sub(r'[\\/*?:"<>|]', "_", name)
-
-
 def _download_worker(job_id: str, url: str, fmt: str, quality: str):
+    # Block here if too many downloads are already running.
+    # The job stays in "queued" state (visible in the UI) until a slot opens.
+    _dl_semaphore.acquire()
     try:
         with jobs_lock:
             jobs[job_id]["status"] = "starting"
 
-        # Build a unique output filename template
         uid = job_id[:8]
+        max_bytes = MAX_FILE_SIZE_MB * 1024 * 1024
+        base_opts = {
+            "quiet": True,
+            "no_warnings": True,
+            "progress_hooks": [_make_progress_hook(job_id)],
+            "max_filesize": max_bytes,
+            **_cookie_opts(),
+        }
 
         if fmt == "mp3":
             ydl_opts = {
+                **base_opts,
                 "format": "bestaudio/best",
                 "outtmpl": str(DOWNLOAD_DIR / f"%(title)s [{uid}].%(ext)s"),
                 "postprocessors": [{
@@ -186,12 +280,8 @@ def _download_worker(job_id: str, url: str, fmt: str, quality: str):
                     "preferredcodec": "mp3",
                     "preferredquality": "192",
                 }],
-                "quiet": True,
-                "no_warnings": True,
-                "progress_hooks": [_make_progress_hook(job_id)],
             }
         else:
-            # MP4 video
             if quality == "best":
                 fmt_str = "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best"
             else:
@@ -200,12 +290,10 @@ def _download_worker(job_id: str, url: str, fmt: str, quality: str):
                     f"+bestaudio[ext=m4a]/best[height<={quality}][ext=mp4]/best"
                 )
             ydl_opts = {
+                **base_opts,
                 "format": fmt_str,
                 "outtmpl": str(DOWNLOAD_DIR / f"%(title)s [{uid}].%(ext)s"),
                 "merge_output_format": "mp4",
-                "quiet": True,
-                "no_warnings": True,
-                "progress_hooks": [_make_progress_hook(job_id)],
             }
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -223,6 +311,8 @@ def _download_worker(job_id: str, url: str, fmt: str, quality: str):
         with jobs_lock:
             jobs[job_id]["status"] = "error"
             jobs[job_id]["error"] = str(exc)
+    finally:
+        _dl_semaphore.release()
 
 
 # ---------------------------------------------------------------------------
@@ -230,10 +320,9 @@ def _download_worker(job_id: str, url: str, fmt: str, quality: str):
 # ---------------------------------------------------------------------------
 
 def _cleanup_jobs():
-    """Remove completed/errored jobs older than 1 hour and their files."""
+    """Remove completed/errored jobs and their files after 1 hour."""
     while True:
         time.sleep(1800)
-        cutoff = time.time() - 3600
         with jobs_lock:
             stale = [jid for jid, j in jobs.items()
                      if j["status"] in ("done", "error")]

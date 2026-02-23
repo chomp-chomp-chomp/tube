@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: tube-downloader
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python app.py
+    envVars:
+      - key: APP_PASSWORD
+        sync: false          # Set this in the Render dashboard — keep it secret
+      - key: SECRET_KEY
+        generateValue: true  # Render generates a random value automatically
+      - key: COOKIES_BASE64
+        sync: false          # Optional: paste base64-encoded cookies.txt here
+      - key: MAX_FILE_SIZE_MB
+        value: 500
+      - key: MAX_DOWNLOADS
+        value: 2             # Keep low on Render free (512 MB RAM, shared CPU)
+      - key: DOWNLOAD_DIR
+        value: /tmp/downloads
