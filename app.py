@@ -89,15 +89,14 @@ def _is_youtube(url: str) -> bool:
 
 
 # YouTube extractor args to reduce bot-detection false positives.
-# Use "default" so yt-dlp always picks its own maintained default clients
-# (currently android_vr + web + web_safari).  android_vr requires no PO
-# token, so formats are never silently dropped — which is what caused the
-# "Requested format is not available" error when ios/tv_embedded were hard-
-# coded (ios needs a GVS PO Token in newer yt-dlp; tv_embedded no longer
-# exists and is silently skipped).
+# Use "mweb" (mobile web) and "web_creator" — both work without a PO
+# (Proof-of-Origin) token, which android_vr/ios/web require in newer
+# yt-dlp builds.  Listing multiple clients means yt-dlp will try each in
+# order and use the first one that returns a usable format list, so we get
+# reliable format availability without needing cookies or PO tokens.
 # Only applied to YouTube URLs — Instagram/TikTok don't need these.
 _YT_EXTRACTOR_ARGS = {
-    "extractor_args": {"youtube": {"player_client": ["default"]}},
+    "extractor_args": {"youtube": {"player_client": ["mweb", "web_creator"]}},
 }
 
 
@@ -367,21 +366,34 @@ def _download_worker(job_id: str, url: str, fmt: str, quality: str):
                 ydl.extract_info(url, download=True)
         except yt_dlp.utils.DownloadError as exc:
             # Some videos don't offer the exact format requested (for example,
-            # a specific container/height combination). Fall back to a more
-            # permissive selector so downloads still complete.
+            # a specific container/height combination). Work through
+            # progressively more permissive selectors so downloads still
+            # complete whenever the video is publicly accessible at all.
             if "Requested format is not available" not in str(exc) or fmt == "mp3":
                 raise
 
-            fallback_opts = {
+            # Tier 1: any video+audio merge (requires ffmpeg), else best mux.
+            fallback1_opts = {
                 **base_opts,
                 "format": "bestvideo*+bestaudio/best" if _FFMPEG_AVAILABLE else "best",
                 "outtmpl": str(DOWNLOAD_DIR / f"%(title)s [{uid}].%(ext)s"),
             }
             if _FFMPEG_AVAILABLE:
-                fallback_opts["merge_output_format"] = "mp4"
+                fallback1_opts["merge_output_format"] = "mp4"
 
-            with yt_dlp.YoutubeDL(fallback_opts) as ydl:
-                ydl.extract_info(url, download=True)
+            try:
+                with yt_dlp.YoutubeDL(fallback1_opts) as ydl:
+                    ydl.extract_info(url, download=True)
+            except yt_dlp.utils.DownloadError:
+                # Tier 2: absolute last resort — grab whatever single stream
+                # yt-dlp considers "best" (usually a pre-muxed 360/480p).
+                fallback2_opts = {
+                    **base_opts,
+                    "format": "best",
+                    "outtmpl": str(DOWNLOAD_DIR / f"%(title)s [{uid}].%(ext)s"),
+                }
+                with yt_dlp.YoutubeDL(fallback2_opts) as ydl:
+                    ydl.extract_info(url, download=True)
 
         candidates = sorted(
             DOWNLOAD_DIR.glob(f"* [{uid}].*"),
