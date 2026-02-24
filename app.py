@@ -460,7 +460,13 @@ def _pytubefix_download(url: str, fmt: str, uid: str) -> str:
     Used as a last resort when every yt-dlp format selector has failed.
     Returns the filename (not full path) written under DOWNLOAD_DIR.
     """
-    from pytubefix import YouTube  # imported lazily — only needed on fallback
+    try:
+        from pytubefix import YouTube  # optional dependency
+    except ImportError:
+        raise RuntimeError(
+            "pytubefix is not installed — cannot use YouTube fallback. "
+            "Install it manually or check requirements.txt."
+        )
 
     yt = YouTube(url)
     title = _sanitize(yt.title or "video")
