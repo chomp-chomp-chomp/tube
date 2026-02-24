@@ -362,11 +362,35 @@ def _download_worker(job_id: str, url: str, fmt: str, quality: str):
                 "merge_output_format": "mp4",
             }
 
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            title = _sanitize(info.get("title", "video"))
-            ext = "mp3" if fmt == "mp3" else "mp4"
-            filename = f"{title} [{uid}].{ext}"
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.extract_info(url, download=True)
+        except yt_dlp.utils.DownloadError as exc:
+            # Some videos don't offer the exact format requested (for example,
+            # a specific container/height combination). Fall back to a more
+            # permissive selector so downloads still complete.
+            if "Requested format is not available" not in str(exc) or fmt == "mp3":
+                raise
+
+            fallback_opts = {
+                **base_opts,
+                "format": "bestvideo*+bestaudio/best" if _FFMPEG_AVAILABLE else "best",
+                "outtmpl": str(DOWNLOAD_DIR / f"%(title)s [{uid}].%(ext)s"),
+            }
+            if _FFMPEG_AVAILABLE:
+                fallback_opts["merge_output_format"] = "mp4"
+
+            with yt_dlp.YoutubeDL(fallback_opts) as ydl:
+                ydl.extract_info(url, download=True)
+
+        candidates = sorted(
+            DOWNLOAD_DIR.glob(f"* [{uid}].*"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+        if not candidates:
+            raise FileNotFoundError("Download completed but output file could not be located")
+        filename = candidates[0].name
 
         with jobs_lock:
             jobs[job_id]["status"] = "done"
