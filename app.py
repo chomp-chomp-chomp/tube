@@ -88,18 +88,6 @@ def _is_youtube(url: str) -> bool:
     return any(d in url for d in ("youtube.com", "youtu.be", "youtube-nocookie.com"))
 
 
-# YouTube extractor args to reduce bot-detection false positives.
-# Use "mweb" (mobile web) and "web_creator" — both work without a PO
-# (Proof-of-Origin) token, which android_vr/ios/web require in newer
-# yt-dlp builds.  Listing multiple clients means yt-dlp will try each in
-# order and use the first one that returns a usable format list, so we get
-# reliable format availability without needing cookies or PO tokens.
-# Only applied to YouTube URLs — Instagram/TikTok don't need these.
-_YT_EXTRACTOR_ARGS = {
-    "extractor_args": {"youtube": {"player_client": ["mweb", "web_creator"]}},
-}
-
-
 def _sanitize(name: str) -> str:
     """Remove characters that are unsafe in filenames."""
     return re.sub(r'[\\/*?:"<>|]', "_", name)
@@ -160,7 +148,6 @@ def video_info():
             "no_warnings": True,
             "skip_download": True,
             **_cookie_opts(),
-            **(  _YT_EXTRACTOR_ARGS if _is_youtube(url) else {}),
         }
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
@@ -329,7 +316,6 @@ def _download_worker(job_id: str, url: str, fmt: str, quality: str):
             "progress_hooks": [_make_progress_hook(job_id)],
             "max_filesize": max_bytes,
             **_cookie_opts(),
-            **(  _YT_EXTRACTOR_ARGS if _is_youtube(url) else {}),
         }
 
         if fmt == "mp3":
@@ -385,26 +371,13 @@ def _download_worker(job_id: str, url: str, fmt: str, quality: str):
             if not _is_requested_format_error(exc) or fmt == "mp3":
                 raise
 
-            # The mweb/web_creator player clients may not expose the full
-            # format list for every video. Build a variant without those
-            # restrictions so later tiers can use yt-dlp's default client.
-            base_unrestricted = {k: v for k, v in base_opts.items()
-                                 if k != "extractor_args"}
-
             merge_fmt = "bestvideo*+bestaudio/best" if _FFMPEG_AVAILABLE else "best"
-            fallbacks = [
-                # Tier 1: restricted client, any merge
-                (base_opts,         merge_fmt),
-                # Tier 2: unrestricted client, any merge
-                (base_unrestricted, merge_fmt),
-                # Tier 3: unrestricted client, absolute best-single-stream
-                (base_unrestricted, "best"),
-            ]
+            fallbacks = [merge_fmt, "best"] if _FFMPEG_AVAILABLE else ["best"]
 
             last_err: Exception = exc
-            for fb_base, fb_fmt in fallbacks:
+            for fb_fmt in fallbacks:
                 fb_opts = {
-                    **fb_base,
+                    **base_opts,
                     "format": fb_fmt,
                     "outtmpl": str(DOWNLOAD_DIR / f"%(title)s [{uid}].%(ext)s"),
                 }
