@@ -86,11 +86,15 @@ def _is_youtube(url: str) -> bool:
 
 
 # YouTube extractor args to reduce bot-detection false positives.
-# ios acts like a native Apple app — YouTube rarely challenges it.
-# tv_embedded and web are fallbacks.
+# Use "default" so yt-dlp always picks its own maintained default clients
+# (currently android_vr + web + web_safari).  android_vr requires no PO
+# token, so formats are never silently dropped — which is what caused the
+# "Requested format is not available" error when ios/tv_embedded were hard-
+# coded (ios needs a GVS PO Token in newer yt-dlp; tv_embedded no longer
+# exists and is silently skipped).
 # Only applied to YouTube URLs — Instagram/TikTok don't need these.
 _YT_EXTRACTOR_ARGS = {
-    "extractor_args": {"youtube": {"player_client": ["ios", "tv_embedded", "web"]}},
+    "extractor_args": {"youtube": {"player_client": ["default"]}},
 }
 
 
@@ -326,10 +330,14 @@ def _download_worker(job_id: str, url: str, fmt: str, quality: str):
             }
         else:
             if quality == "best":
-                fmt_str = "bestvideo+bestaudio/best"
+                fmt_str = (
+                    "bestvideo[ext=mp4]+bestaudio[ext=m4a]"
+                    "/bestvideo+bestaudio/best"
+                )
             else:
                 fmt_str = (
-                    f"bestvideo[height<={quality}]+bestaudio"
+                    f"bestvideo[ext=mp4][height<={quality}]+bestaudio[ext=m4a]"
+                    f"/bestvideo[height<={quality}]+bestaudio"
                     f"/best[height<={quality}]/best"
                 )
             ydl_opts = {
