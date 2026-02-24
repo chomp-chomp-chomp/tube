@@ -92,3 +92,41 @@ Use a `launchd` plist pointing to the same `python app.py` command with `RunAtLo
   ```bash
   python -c "import secrets; print(secrets.token_hex(32))"
   ```
+
+## Troubleshooting: `Requested format is not available`
+
+If yt-dlp returns:
+
+```text
+ERROR: [youtube] <id>: Requested format is not available.
+```
+
+try these options in order:
+
+1. Inspect available formats:
+
+   ```bash
+   yt-dlp --list-formats "https://www.youtube.com/watch?v=<id>"
+   ```
+
+2. Use a permissive fallback selector (no hard MP4 requirement):
+
+   ```bash
+   yt-dlp -f "bestvideo*+bestaudio*/best" --merge-output-format mp4 "<url>"
+   ```
+
+3. Switch YouTube extractor client (often bypasses empty/limited format lists):
+
+   ```bash
+   yt-dlp --extractor-args "youtube:player_client=ios" -f "bestvideo*+bestaudio*/best" --merge-output-format mp4 "<url>"
+   ```
+
+4. Last resort for reliability over quality:
+
+   ```bash
+   yt-dlp --extractor-args "youtube:player_client=ios" -f "best" "<url>"
+   ```
+
+Notes:
+- `--merge-output-format mp4` requires `ffmpeg`.
+- If you force `ext=mp4` on videos that only provide WebM/Opus streams, yt-dlp can raise this error.
