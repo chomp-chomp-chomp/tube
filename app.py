@@ -99,6 +99,42 @@ def _is_requested_format_error(exc: Exception) -> bool:
     return "requested format is not available" in msg
 
 
+def _available_format_hint(url: str) -> str:
+    """Return a compact list of available formats to aid troubleshooting."""
+    try:
+        ydl_opts = {
+            "quiet": True,
+            "no_warnings": True,
+            "skip_download": True,
+            **_cookie_opts(),
+            **({"extractor_args": {"youtube": {"player_client": ["ios"]}}}
+               if _is_youtube(url) else {}),
+        }
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+        formats = info.get("formats") or []
+        seen = set()
+        rows = []
+        for f in formats:
+            ext = f.get("ext") or "?"
+            h = f.get("height")
+            note = f.get("format_note") or ""
+            label = f"{ext}:{h}p" if h else ext
+            if note:
+                label = f"{label} ({note})"
+            if label in seen:
+                continue
+            seen.add(label)
+            rows.append(label)
+            if len(rows) >= 8:
+                break
+        if not rows:
+            return ""
+        return "Available formats include: " + ", ".join(rows)
+    except Exception:
+        return ""
+
+
 # ---------------------------------------------------------------------------
 # Routes – auth
 # ---------------------------------------------------------------------------
@@ -449,9 +485,19 @@ def _download_worker(job_id: str, url: str, fmt: str, quality: str):
             jobs[job_id]["filename"] = filename
 
     except Exception as exc:
+        error_msg = str(exc)
+        if _is_requested_format_error(exc):
+            hint = _available_format_hint(url)
+            extra = (
+                "Try Best quality or retry with updated cookies in Settings. "
+                "The server already retries permissive and iOS-client fallbacks."
+            )
+            error_msg = f"{error_msg}. {extra}"
+            if hint:
+                error_msg = f"{error_msg} {hint}"
         with jobs_lock:
             jobs[job_id]["status"] = "error"
-            jobs[job_id]["error"] = str(exc)
+            jobs[job_id]["error"] = error_msg
     finally:
         _dl_semaphore.release()
 
@@ -581,9 +627,19 @@ def _gallerydl_worker(job_id: str, url: str):
             jobs[job_id]["filename"] = filename
 
     except Exception as exc:
+        error_msg = str(exc)
+        if _is_requested_format_error(exc):
+            hint = _available_format_hint(url)
+            extra = (
+                "Try Best quality or retry with updated cookies in Settings. "
+                "The server already retries permissive and iOS-client fallbacks."
+            )
+            error_msg = f"{error_msg}. {extra}"
+            if hint:
+                error_msg = f"{error_msg} {hint}"
         with jobs_lock:
             jobs[job_id]["status"] = "error"
-            jobs[job_id]["error"] = str(exc)
+            jobs[job_id]["error"] = error_msg
         shutil.rmtree(DOWNLOAD_DIR / f"gallery_{job_id[:8]}", ignore_errors=True)
     finally:
         _dl_semaphore.release()
