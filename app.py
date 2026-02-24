@@ -49,6 +49,9 @@ elif COOKIES_FILE.exists() and COOKIES_FILE.stat().st_size > 0:
 else:
     print("[chompy] No cookies file found — only public content will be accessible")
 
+_FFMPEG_AVAILABLE = bool(shutil.which("ffmpeg"))
+print(f"[chompy] ffmpeg: {'found at ' + shutil.which('ffmpeg') if _FFMPEG_AVAILABLE else 'NOT FOUND — merged HD downloads unavailable'}")
+
 # In-memory job tracker: job_id -> {"status", "progress", "filename", "error"}
 jobs: dict[str, dict] = {}
 jobs_lock = threading.Lock()
@@ -329,17 +332,29 @@ def _download_worker(job_id: str, url: str, fmt: str, quality: str):
                 }],
             }
         else:
-            if quality == "best":
-                fmt_str = (
-                    "bestvideo[ext=mp4]+bestaudio[ext=m4a]"
-                    "/bestvideo+bestaudio/best"
-                )
+            if _FFMPEG_AVAILABLE:
+                # ffmpeg present: prefer mp4+m4a for a clean merge, fall back
+                # to any container, then to a single combined stream.
+                if quality == "best":
+                    fmt_str = (
+                        "bestvideo[ext=mp4]+bestaudio[ext=m4a]"
+                        "/bestvideo+bestaudio/best"
+                    )
+                else:
+                    fmt_str = (
+                        f"bestvideo[ext=mp4][height<={quality}]+bestaudio[ext=m4a]"
+                        f"/bestvideo[height<={quality}]+bestaudio"
+                        f"/best[height<={quality}]/best"
+                    )
             else:
-                fmt_str = (
-                    f"bestvideo[ext=mp4][height<={quality}]+bestaudio[ext=m4a]"
-                    f"/bestvideo[height<={quality}]+bestaudio"
-                    f"/best[height<={quality}]/best"
-                )
+                # No ffmpeg: use pre-muxed streams only (≤720p on YouTube).
+                if quality == "best":
+                    fmt_str = "best[ext=mp4]/best"
+                else:
+                    fmt_str = (
+                        f"best[ext=mp4][height<={quality}]"
+                        f"/best[height<={quality}]/best[ext=mp4]/best"
+                    )
             ydl_opts = {
                 **base_opts,
                 "format": fmt_str,
