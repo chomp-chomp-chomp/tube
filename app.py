@@ -316,6 +316,12 @@ def _download_worker(job_id: str, url: str, fmt: str, quality: str):
             "progress_hooks": [_make_progress_hook(job_id)],
             "max_filesize": max_bytes,
             **_cookie_opts(),
+            # tv_embedded and ios player clients are exempt from YouTube's
+            # Proof-of-Origin (PO) token requirement, so they return a full
+            # format list even when the default web client comes back empty.
+            # This is the same bypass used by 4K Video Downloader / y2mate.
+            **( {"extractor_args": {"youtube": {"player_client": ["tv_embedded", "ios"]}}}
+                if _is_youtube(url) else {} ),
         }
 
         if fmt == "mp3":
