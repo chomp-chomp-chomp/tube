@@ -375,15 +375,25 @@ def _download_worker(job_id: str, url: str, fmt: str, quality: str):
             if not _is_requested_format_error(exc) or fmt == "mp3":
                 raise
 
-            # Progressive fallbacks: drop format_sort and height constraints,
-            # then try the absolute most-permissive selector available.
+            # Progressive fallbacks:
+            # 1. Drop format_sort/height constraints (any codec, any stream).
+            # 2. Retry with iOS player client — iOS doesn't require a YouTube
+            #    Proof-of-Origin token, so it returns a full format list even
+            #    when the default web client comes back empty.
+            # 3. Absolute last resort: bare "best" via iOS client.
+            _ios_args = {"extractor_args": {"youtube": {"player_client": ["ios"]}}}
             if _FFMPEG_AVAILABLE:
                 fallbacks = [
                     {"format": "bestvideo*+bestaudio*/best", "merge_output_format": "mp4"},
-                    {"format": "best"},
+                    {"format": "bestvideo*+bestaudio*/best", "merge_output_format": "mp4",
+                     **(_ios_args if _is_youtube(url) else {})},
+                    {"format": "best", **(_ios_args if _is_youtube(url) else {})},
                 ]
             else:
-                fallbacks = [{"format": "best"}]
+                fallbacks = [
+                    {"format": "best"},
+                    {"format": "best", **(_ios_args if _is_youtube(url) else {})},
+                ]
 
             last_err: Exception = exc
             for fb_extra in fallbacks:
