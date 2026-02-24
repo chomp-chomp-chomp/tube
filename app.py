@@ -147,6 +147,7 @@ def video_info():
     if not url:
         return jsonify({"error": "No URL provided."}), 400
 
+    yt_err = None
     try:
         ydl_opts = {
             "quiet": True,
@@ -167,13 +168,19 @@ def video_info():
     except yt_dlp.utils.UnsupportedError:
         pass  # URL not recognised by yt-dlp — try gallery-dl below
     except Exception as exc:
-        return jsonify({"error": str(exc)}), 400  # real yt-dlp error, surface it
+        if _is_youtube(url):
+            return jsonify({"error": str(exc)}), 400  # YouTube error, surface it
+        # For non-YouTube URLs (Threads, Instagram, etc.) yt-dlp may recognise
+        # the domain but still fail (e.g. auth required).  Save the message and
+        # let gallery-dl have a go before giving up.
+        yt_err = str(exc)
 
     try:
         gdl_info = _gallerydl_info(url)
         return jsonify(gdl_info)
     except Exception as exc:
-        return jsonify({"error": str(exc)}), 400
+        # Return whichever error message is more informative.
+        return jsonify({"error": str(exc) or yt_err}), 400
 
 
 @app.route("/download", methods=["POST"])
