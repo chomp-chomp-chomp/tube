@@ -379,31 +379,47 @@ def _download_worker(job_id: str, url: str, fmt: str, quality: str):
             if "Requested format is not available" not in str(exc) or fmt == "mp3":
                 raise
 
-            # Tier 1: any video+audio merge (requires ffmpeg), else best mux.
-            fallback1_opts = {
-                **base_opts,
-                "format": "bestvideo*+bestaudio/best" if _FFMPEG_AVAILABLE else "best",
-                "outtmpl": str(DOWNLOAD_DIR / f"%(title)s [{uid}].%(ext)s"),
-            }
-            if _FFMPEG_AVAILABLE:
-                fallback1_opts["merge_output_format"] = "mp4"
+            # The mweb/web_creator player clients may not expose the full
+            # format list for every video. Build a variant without those
+            # restrictions so later tiers can use yt-dlp's default client.
+            base_unrestricted = {k: v for k, v in base_opts.items()
+                                 if k != "extractor_args"}
 
-            try:
-                with yt_dlp.YoutubeDL(fallback1_opts) as ydl:
-                    ydl.extract_info(url, download=True)
-            except yt_dlp.utils.DownloadError:
-                # Tier 2: absolute last resort — grab whatever single stream
-                # yt-dlp considers "best" (usually a pre-muxed 360/480p).
-                fallback2_opts = {
-                    **base_opts,
-                    "format": "best",
+            merge_fmt = "bestvideo*+bestaudio/best" if _FFMPEG_AVAILABLE else "best"
+            fallbacks = [
+                # Tier 1: restricted client, any merge
+                (base_opts,         merge_fmt),
+                # Tier 2: unrestricted client, any merge
+                (base_unrestricted, merge_fmt),
+                # Tier 3: unrestricted client, absolute best-single-stream
+                (base_unrestricted, "best"),
+            ]
+
+            last_err: Exception = exc
+            for fb_base, fb_fmt in fallbacks:
+                fb_opts = {
+                    **fb_base,
+                    "format": fb_fmt,
                     "outtmpl": str(DOWNLOAD_DIR / f"%(title)s [{uid}].%(ext)s"),
                 }
-                with yt_dlp.YoutubeDL(fallback2_opts) as ydl:
-                    ydl.extract_info(url, download=True)
+                if _FFMPEG_AVAILABLE:
+                    fb_opts["merge_output_format"] = "mp4"
+                try:
+                    with yt_dlp.YoutubeDL(fb_opts) as ydl:
+                        ydl.extract_info(url, download=True)
+                    last_err = None
+                    break
+                except yt_dlp.utils.DownloadError as e:
+                    last_err = e
+            if last_err:
+                raise last_err
 
+        # pathlib.glob treats [...] as a character class, so we can't use
+        # it to match the literal "[uid]" in the filename.  Use a plain
+        # directory scan with an `in` check instead.
         candidates = sorted(
-            DOWNLOAD_DIR.glob(f"* [{uid}].*"),
+            [p for p in DOWNLOAD_DIR.iterdir()
+             if p.is_file() and f"[{uid}]" in p.name],
             key=lambda p: p.stat().st_mtime,
             reverse=True,
         )
