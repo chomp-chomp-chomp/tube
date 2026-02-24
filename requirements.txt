@@ -3,3 +3,4 @@ gunicorn>=21.2
 yt-dlp
 gallery-dl>=1.27
 python-dotenv>=1.0
+pytubefix>=8.0

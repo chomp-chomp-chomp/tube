@@ -6,6 +6,7 @@ A password-protected, self-hosted web app for saving YouTube videos as **MP4** o
 
 - Password-protected login (session cookie, 1-second brute-force delay)
 - Download MP4 at Best / 1080p / 720p / 480p
+- Automatic YouTube fallback chain for difficult videos (yt-dlp permissive selectors, iOS client, then pytubefix)
 - Download MP3 (192 kbps) extracted from the best available audio stream
 - Video preview (thumbnail, title, uploader, duration) before downloading
 - Real-time progress bar via background job polling
@@ -15,6 +16,7 @@ A password-protected, self-hosted web app for saving YouTube videos as **MP4** o
 
 - Python 3.10+
 - [ffmpeg](https://ffmpeg.org/download.html) (required for MP3 extraction and MP4 merging)
+- Python dependencies from `requirements.txt` (includes `pytubefix` as YouTube fallback backend)
 
 ## Setup
 
