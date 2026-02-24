@@ -105,6 +105,12 @@ def _sanitize(name: str) -> str:
     return re.sub(r'[\\/*?:"<>|]', "_", name)
 
 
+def _is_requested_format_error(exc: Exception) -> bool:
+    """True when yt-dlp reports an unavailable format selector."""
+    msg = str(exc).lower()
+    return "requested format is not available" in msg
+
+
 # ---------------------------------------------------------------------------
 # Routes – auth
 # ---------------------------------------------------------------------------
@@ -371,12 +377,12 @@ def _download_worker(job_id: str, url: str, fmt: str, quality: str):
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 ydl.extract_info(url, download=True)
-        except yt_dlp.utils.DownloadError as exc:
+        except Exception as exc:
             # Some videos don't offer the exact format requested (for example,
             # a specific container/height combination). Work through
             # progressively more permissive selectors so downloads still
             # complete whenever the video is publicly accessible at all.
-            if "Requested format is not available" not in str(exc) or fmt == "mp3":
+            if not _is_requested_format_error(exc) or fmt == "mp3":
                 raise
 
             # The mweb/web_creator player clients may not expose the full
@@ -409,7 +415,7 @@ def _download_worker(job_id: str, url: str, fmt: str, quality: str):
                         ydl.extract_info(url, download=True)
                     last_err = None
                     break
-                except yt_dlp.utils.DownloadError as e:
+                except Exception as e:
                     last_err = e
             if last_err:
                 raise last_err
