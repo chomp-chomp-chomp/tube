@@ -331,19 +331,23 @@ def _download_worker(job_id: str, url: str, fmt: str, quality: str):
             }
         else:
             if _FFMPEG_AVAILABLE:
-                # ffmpeg present: prefer mp4+m4a for a clean merge, fall back
-                # to any container, then to a single combined stream.
+                # ffmpeg present: use format_sort to prefer mp4/m4a without
+                # requiring them — avoids "Requested format is not available"
+                # on videos that only offer webm/vp9 or opus audio.
                 if quality == "best":
-                    fmt_str = (
-                        "bestvideo[ext=mp4]+bestaudio[ext=m4a]"
-                        "/bestvideo+bestaudio/best"
-                    )
+                    fmt_str = "bestvideo+bestaudio/best"
                 else:
                     fmt_str = (
-                        f"bestvideo[ext=mp4][height<={quality}]+bestaudio[ext=m4a]"
-                        f"/bestvideo[height<={quality}]+bestaudio"
+                        f"bestvideo[height<={quality}]+bestaudio"
                         f"/best[height<={quality}]/best"
                     )
+                ydl_opts = {
+                    **base_opts,
+                    "format": fmt_str,
+                    "format_sort": ["ext:mp4:m4a", "res", "fps"],
+                    "outtmpl": str(DOWNLOAD_DIR / f"%(title)s [{uid}].%(ext)s"),
+                    "merge_output_format": "mp4",
+                }
             else:
                 # No ffmpeg: use pre-muxed streams only (≤720p on YouTube).
                 if quality == "best":
@@ -353,12 +357,12 @@ def _download_worker(job_id: str, url: str, fmt: str, quality: str):
                         f"best[ext=mp4][height<={quality}]"
                         f"/best[height<={quality}]/best[ext=mp4]/best"
                     )
-            ydl_opts = {
-                **base_opts,
-                "format": fmt_str,
-                "outtmpl": str(DOWNLOAD_DIR / f"%(title)s [{uid}].%(ext)s"),
-                "merge_output_format": "mp4",
-            }
+                ydl_opts = {
+                    **base_opts,
+                    "format": fmt_str,
+                    "outtmpl": str(DOWNLOAD_DIR / f"%(title)s [{uid}].%(ext)s"),
+                    "merge_output_format": "mp4",
+                }
 
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -371,18 +375,23 @@ def _download_worker(job_id: str, url: str, fmt: str, quality: str):
             if not _is_requested_format_error(exc) or fmt == "mp3":
                 raise
 
-            merge_fmt = "bestvideo*+bestaudio/best" if _FFMPEG_AVAILABLE else "best"
-            fallbacks = [merge_fmt, "best"] if _FFMPEG_AVAILABLE else ["best"]
+            # Progressive fallbacks: drop format_sort and height constraints,
+            # then try the absolute most-permissive selector available.
+            if _FFMPEG_AVAILABLE:
+                fallbacks = [
+                    {"format": "bestvideo*+bestaudio*/best", "merge_output_format": "mp4"},
+                    {"format": "best"},
+                ]
+            else:
+                fallbacks = [{"format": "best"}]
 
             last_err: Exception = exc
-            for fb_fmt in fallbacks:
+            for fb_extra in fallbacks:
                 fb_opts = {
                     **base_opts,
-                    "format": fb_fmt,
                     "outtmpl": str(DOWNLOAD_DIR / f"%(title)s [{uid}].%(ext)s"),
+                    **fb_extra,
                 }
-                if _FFMPEG_AVAILABLE:
-                    fb_opts["merge_output_format"] = "mp4"
                 try:
                     with yt_dlp.YoutubeDL(fb_opts) as ydl:
                         ydl.extract_info(url, download=True)
