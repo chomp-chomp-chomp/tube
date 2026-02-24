@@ -3,7 +3,7 @@ services:
     name: chompy
     env: python
     plan: free
-    buildCommand: pip install -r requirements.txt && apt-get install -y ffmpeg
+    buildCommand: pip install -r requirements.txt && (pip install "pytubefix>=9.0,<10.0" || true) && apt-get install -y ffmpeg
     startCommand: gunicorn --workers 1 --threads 4 --bind 0.0.0.0:$PORT app:app
     envVars:
       - key: APP_PASSWORD
