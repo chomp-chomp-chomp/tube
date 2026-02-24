@@ -409,6 +409,18 @@ def _download_worker(job_id: str, url: str, fmt: str, quality: str):
                     break
                 except Exception as e:
                     last_err = e
+            # Last resort: pytubefix uses YouTube's InnerTube API directly
+            # and is unaffected by yt-dlp format-selector or PO-token issues.
+            if last_err and _is_youtube(url):
+                with jobs_lock:
+                    jobs[job_id]["status"] = "downloading"
+                filename = _pytubefix_download(url, fmt, uid)
+                with jobs_lock:
+                    jobs[job_id]["status"] = "done"
+                    jobs[job_id]["progress"] = 100
+                    jobs[job_id]["filename"] = filename
+                return
+
             if last_err:
                 raise last_err
 
@@ -436,6 +448,48 @@ def _download_worker(job_id: str, url: str, fmt: str, quality: str):
             jobs[job_id]["error"] = str(exc)
     finally:
         _dl_semaphore.release()
+
+
+# ---------------------------------------------------------------------------
+# pytubefix fallback (YouTube only)
+# ---------------------------------------------------------------------------
+
+def _pytubefix_download(url: str, fmt: str, uid: str) -> str:
+    """Download a YouTube URL via pytubefix (InnerTube API).
+
+    Used as a last resort when every yt-dlp format selector has failed.
+    Returns the filename (not full path) written under DOWNLOAD_DIR.
+    """
+    from pytubefix import YouTube  # imported lazily — only needed on fallback
+
+    yt = YouTube(url)
+    title = _sanitize(yt.title or "video")
+
+    if fmt == "mp3":
+        stream = yt.streams.get_audio_only()
+        if not stream:
+            raise ValueError("pytubefix: no audio stream available")
+        raw_ext = stream.subtype or "webm"
+        raw_name = f"{title} [{uid}].{raw_ext}"
+        stream.download(output_path=str(DOWNLOAD_DIR), filename=raw_name)
+        if _FFMPEG_AVAILABLE:
+            src = DOWNLOAD_DIR / raw_name
+            dst = DOWNLOAD_DIR / f"{title} [{uid}].mp3"
+            subprocess.run(
+                ["ffmpeg", "-y", "-i", str(src), "-q:a", "0", str(dst)],
+                check=True, capture_output=True,
+            )
+            src.unlink(missing_ok=True)
+            return dst.name
+        return raw_name
+    else:
+        stream = yt.streams.get_highest_resolution()  # progressive, up to 720p
+        if not stream:
+            raise ValueError("pytubefix: no video stream available")
+        ext = stream.subtype or "mp4"
+        filename = f"{title} [{uid}].{ext}"
+        stream.download(output_path=str(DOWNLOAD_DIR), filename=filename)
+        return filename
 
 
 # ---------------------------------------------------------------------------
