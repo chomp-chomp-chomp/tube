@@ -102,6 +102,25 @@ def _sanitize(name: str) -> str:
     return re.sub(r'[\\/*?:"<>|]', "_", name)
 
 
+class _YDLLogger:
+    """Route yt-dlp's log output through our own prefix.
+
+    Without this, yt-dlp writes raw 'ERROR: ...' lines to stderr even
+    when quiet=True, which makes server logs confusing.
+    """
+    def debug(self, msg):
+        pass
+
+    def info(self, msg):
+        pass
+
+    def warning(self, msg):
+        print(f"[chompy] yt-dlp warn: {msg}")
+
+    def error(self, msg):
+        print(f"[chompy] yt-dlp error: {msg}")
+
+
 def _is_retriable_format_error(exc: Exception) -> bool:
     """True when yt-dlp reports an error that a looser format selector might fix."""
     msg = str(exc).lower()
@@ -120,6 +139,7 @@ def _available_format_hint(url: str) -> str:
         ydl_opts = {
             "quiet": True,
             "no_warnings": True,
+            "logger": _YDLLogger(),
             "skip_download": True,
             **_cookie_opts(),
         }
@@ -195,6 +215,7 @@ def video_info():
         ydl_opts = {
             "quiet": True,
             "no_warnings": True,
+            "logger": _YDLLogger(),
             "skip_download": True,
             **_cookie_opts(),
         }
@@ -362,17 +383,36 @@ def _download_worker(job_id: str, url: str, fmt: str, quality: str):
         base_opts = {
             "quiet": True,
             "no_warnings": True,
+            "logger": _YDLLogger(),
             "progress_hooks": [_make_progress_hook(job_id)],
             "max_filesize": max_bytes,
             **_cookie_opts(),
-            # Let yt-dlp use its default player-client logic (web_creator
-            # since ~2025.11).  Older overrides like tv_embedded and ios
-            # are dead or unreliable — YouTube killed embed players and
-            # now requires PO tokens for most clients.  yt-dlp handles
-            # PO token negotiation automatically when a provider plugin
-            # (e.g. bgutil-ytdlp-pot-provider) is installed.
         }
 
+        _yt = _is_youtube(url)
+
+        # ── YouTube fast-path: try pytubefix first ──
+        # pytubefix uses YouTube's InnerTube API directly and is not
+        # affected by the PO-token / bot-detection that blocks yt-dlp
+        # on server IPs.  Quality is limited to 720p progressive, but
+        # a working 720p download beats a broken 1080p one.
+        if _yt:
+            try:
+                print(f"[chompy] Trying pytubefix first (InnerTube API)…")
+                with jobs_lock:
+                    jobs[job_id]["status"] = "downloading"
+                filename = _pytubefix_download(url, fmt, uid)
+                print(f"[chompy] pytubefix succeeded: {filename}")
+                with jobs_lock:
+                    jobs[job_id]["status"] = "done"
+                    jobs[job_id]["progress"] = 100
+                    jobs[job_id]["filename"] = filename
+                return
+            except Exception as ptf_err:
+                print(f"[chompy] pytubefix failed: {ptf_err}")
+                # Fall through to yt-dlp below
+
+        # ── Build yt-dlp options ──
         if fmt == "mp3":
             ydl_opts = {
                 **base_opts,
@@ -385,9 +425,6 @@ def _download_worker(job_id: str, url: str, fmt: str, quality: str):
                 }],
             }
         else:
-            # Use the * suffix (bv* / ba) so streams that already contain
-            # both tracks are also candidates — maximises the chance of a
-            # match when YouTube returns a limited format list.
             if _FFMPEG_AVAILABLE:
                 if quality == "best":
                     fmt_str = "bv*+ba/b"
@@ -418,6 +455,8 @@ def _download_worker(job_id: str, url: str, fmt: str, quality: str):
                     "merge_output_format": "mp4",
                 }
 
+        # ── Primary yt-dlp attempt ──
+        print(f"[chompy] Trying yt-dlp (format: {ydl_opts.get('format')})…")
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 ydl.extract_info(url, download=True)
@@ -425,103 +464,52 @@ def _download_worker(job_id: str, url: str, fmt: str, quality: str):
             if not _is_retriable_format_error(exc):
                 raise
 
-            # ── Diagnose: does YouTube return any REAL formats at all? ──
-            # If bot detection is active, YouTube returns only storyboard
-            # entries and zero actual video/audio streams.  In that case,
-            # retrying with different format strings or player-clients is
-            # pointless — go straight to pytubefix.
-            _yt = _is_youtube(url)
-            _has_real_formats = True  # assume yes for non-YouTube
-            if _yt:
-                try:
-                    with yt_dlp.YoutubeDL(
-                        {**base_opts, "skip_download": True}
-                    ) as probe:
-                        probe_info = probe.extract_info(url, download=False)
-                    avail = probe_info.get("formats") or []
-                    usable = [
-                        f for f in avail
-                        if (f.get("vcodec", "none") != "none"
-                            or f.get("acodec", "none") != "none")
-                    ]
-                    _has_real_formats = bool(usable)
-                    if usable:
-                        print(f"[chompy] {len(usable)} usable formats found "
-                              f"(of {len(avail)} total) — retrying with fallbacks")
-                    else:
-                        print(f"[chompy] 0 usable formats (of {len(avail)} total) "
-                              f"— YouTube bot-detection is active, skipping to pytubefix")
-                except Exception:
-                    pass  # probe failed, try fallbacks anyway
+            print(f"[chompy] Primary yt-dlp failed: {exc}")
 
-            # For MP3, skip format fallbacks (they all use bestaudio/best
-            # already) but still fall through to pytubefix below.
-            if fmt == "mp3":
-                if _yt:
-                    with jobs_lock:
-                        jobs[job_id]["status"] = "downloading"
-                    filename = _pytubefix_download(url, fmt, uid)
-                    with jobs_lock:
-                        jobs[job_id]["status"] = "done"
-                        jobs[job_id]["progress"] = 100
-                        jobs[job_id]["filename"] = filename
-                    return
-                raise
+            # ── Fallback loop with different player-clients ──
+            if not _yt:
+                raise  # non-YouTube: no client fallbacks to try
 
-            # ── Fallback loop (only if YouTube gave us real formats) ──
+            _client = lambda c: (
+                {"extractor_args": {"youtube": {"player_client": [c]}}}
+            )
+            _wild = "bv*+ba/b"
+            if _FFMPEG_AVAILABLE:
+                fallbacks = [
+                    ("web_creator", {"format": _wild, "merge_output_format": "mp4",
+                                     **_client("web_creator")}),
+                    ("mweb",       {"format": _wild, "merge_output_format": "mp4",
+                                     **_client("mweb")}),
+                    ("android",    {"format": _wild, "merge_output_format": "mp4",
+                                     **_client("android")}),
+                    ("mweb(b)",    {"format": "b", **_client("mweb")}),
+                ]
+            else:
+                fallbacks = [
+                    ("web_creator", {"format": "b", **_client("web_creator")}),
+                    ("mweb",        {"format": "b", **_client("mweb")}),
+                    ("android",     {"format": "b", **_client("android")}),
+                ]
+
             last_err: Exception = exc
-            if _has_real_formats:
-                _client = lambda c: (
-                    {"extractor_args": {"youtube": {"player_client": [c]}}}
-                    if _yt else {}
-                )
-                _wild = "bv*+ba/b"
-                if _FFMPEG_AVAILABLE:
-                    fallbacks = [
-                        {"format": _wild, "merge_output_format": "mp4"},
-                        {"format": _wild, "merge_output_format": "mp4",
-                         **_client("web_creator")},
-                        {"format": _wild, "merge_output_format": "mp4",
-                         **_client("mweb")},
-                        {"format": _wild, "merge_output_format": "mp4",
-                         **_client("android")},
-                        {"format": "b", **_client("mweb")},
-                    ]
-                else:
-                    fallbacks = [
-                        {"format": "b"},
-                        {"format": "b", **_client("web_creator")},
-                        {"format": "b", **_client("mweb")},
-                        {"format": "b", **_client("android")},
-                    ]
-
-                for fb_extra in fallbacks:
-                    fb_opts = {
-                        **base_opts,
-                        "outtmpl": str(
-                            DOWNLOAD_DIR / f"%(title)s [{uid}].%(ext)s"
-                        ),
-                        **fb_extra,
-                    }
-                    try:
-                        with yt_dlp.YoutubeDL(fb_opts) as ydl:
-                            ydl.extract_info(url, download=True)
-                        last_err = None
-                        break
-                    except Exception as e:
-                        last_err = e
-
-            # Last resort: pytubefix uses YouTube's InnerTube API directly
-            # and is unaffected by yt-dlp format-selector or PO-token issues.
-            if last_err and _yt:
-                with jobs_lock:
-                    jobs[job_id]["status"] = "downloading"
-                filename = _pytubefix_download(url, fmt, uid)
-                with jobs_lock:
-                    jobs[job_id]["status"] = "done"
-                    jobs[job_id]["progress"] = 100
-                    jobs[job_id]["filename"] = filename
-                return
+            for name, fb_extra in fallbacks:
+                fb_opts = {
+                    **base_opts,
+                    "outtmpl": str(
+                        DOWNLOAD_DIR / f"%(title)s [{uid}].%(ext)s"
+                    ),
+                    **fb_extra,
+                }
+                try:
+                    print(f"[chompy] Trying yt-dlp fallback: {name}…")
+                    with yt_dlp.YoutubeDL(fb_opts) as ydl:
+                        ydl.extract_info(url, download=True)
+                    last_err = None
+                    print(f"[chompy] Fallback {name} succeeded")
+                    break
+                except Exception as e:
+                    print(f"[chompy] Fallback {name} failed: {e}")
+                    last_err = e
 
             if last_err:
                 raise last_err
@@ -549,7 +537,7 @@ def _download_worker(job_id: str, url: str, fmt: str, quality: str):
         if _is_retriable_format_error(exc):
             hint = _available_format_hint(url)
             extra = (
-                "All fallback clients (web_creator, mweb, android, ios, pytubefix) "
+                "All fallback clients (web_creator, mweb, android, pytubefix) "
                 "were attempted. "
                 + ("Node.js is NOT installed — the PO-token plugin cannot run. "
                    "Install Node.js >= 20 to fix YouTube downloads."
