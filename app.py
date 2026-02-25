@@ -253,9 +253,34 @@ def video_info():
             except Exception:
                 pass  # pytubefix also failed, return original error
             return jsonify({"error": str(exc)}), 400
-        # For non-YouTube URLs (Threads, Instagram, etc.) yt-dlp may recognise
-        # the domain but still fail (e.g. auth required).  Save the message and
-        # let gallery-dl have a go before giving up.
+
+        # yt-dlp recognised the domain but extraction failed (age-gate,
+        # geo-block, auth required, etc.).  Check whether yt-dlp has an
+        # extractor for this URL — if so, the download should still go
+        # through yt-dlp, not gallery-dl.
+        has_ytdlp_extractor = False
+        try:
+            with yt_dlp.YoutubeDL({"quiet": True}) as _probe:
+                for _name, _ie in _probe._ies.items():
+                    if _ie.suitable(url):
+                        has_ytdlp_extractor = True
+                        break
+        except Exception:
+            pass
+
+        if has_ytdlp_extractor:
+            # Return a stub preview so the user can still hit Download
+            # (yt-dlp may succeed on the actual download even if info
+            # extraction failed).
+            return jsonify({
+                "title": "Video (preview unavailable)",
+                "thumbnail": "",
+                "duration": 0,
+                "uploader": "",
+                "tool": "ytdlp",
+            })
+
+        # Not recognised by yt-dlp — let gallery-dl have a go.
         yt_err = str(exc)
 
     try:
