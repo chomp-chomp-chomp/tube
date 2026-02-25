@@ -93,10 +93,16 @@ def _sanitize(name: str) -> str:
     return re.sub(r'[\\/*?:"<>|]', "_", name)
 
 
-def _is_requested_format_error(exc: Exception) -> bool:
-    """True when yt-dlp reports an unavailable format selector."""
+def _is_retriable_format_error(exc: Exception) -> bool:
+    """True when yt-dlp reports an error that a looser format selector might fix."""
     msg = str(exc).lower()
-    return "requested format is not available" in msg
+    return any(needle in msg for needle in (
+        "requested format is not available",
+        "no video formats found",
+        "this video is not available",
+        "http error 403",
+        "unable to download",
+    ))
 
 
 def _available_format_hint(url: str) -> str:
@@ -107,8 +113,6 @@ def _available_format_hint(url: str) -> str:
             "no_warnings": True,
             "skip_download": True,
             **_cookie_opts(),
-            **({"extractor_args": {"youtube": {"player_client": ["ios"]}}}
-               if _is_youtube(url) else {}),
         }
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
@@ -352,12 +356,12 @@ def _download_worker(job_id: str, url: str, fmt: str, quality: str):
             "progress_hooks": [_make_progress_hook(job_id)],
             "max_filesize": max_bytes,
             **_cookie_opts(),
-            # tv_embedded and ios player clients are exempt from YouTube's
-            # Proof-of-Origin (PO) token requirement, so they return a full
-            # format list even when the default web client comes back empty.
-            # This is the same bypass used by 4K Video Downloader / y2mate.
-            **( {"extractor_args": {"youtube": {"player_client": ["tv_embedded", "ios"]}}}
-                if _is_youtube(url) else {} ),
+            # Let yt-dlp use its default player-client logic (web_creator
+            # since ~2025.11).  Older overrides like tv_embedded and ios
+            # are dead or unreliable — YouTube killed embed players and
+            # now requires PO tokens for most clients.  yt-dlp handles
+            # PO token negotiation automatically when a provider plugin
+            # (e.g. bgutil-ytdlp-pot-provider) is installed.
         }
 
         if fmt == "mp3":
@@ -414,27 +418,44 @@ def _download_worker(job_id: str, url: str, fmt: str, quality: str):
             # a specific container/height combination). Work through
             # progressively more permissive selectors so downloads still
             # complete whenever the video is publicly accessible at all.
-            if not _is_requested_format_error(exc) or fmt == "mp3":
+            if not _is_retriable_format_error(exc):
+                raise
+            # For MP3, skip format fallbacks (they all use bestaudio/best
+            # already) but still fall through to pytubefix below.
+            if fmt == "mp3":
+                last_err = exc
+                if _is_youtube(url):
+                    with jobs_lock:
+                        jobs[job_id]["status"] = "downloading"
+                    filename = _pytubefix_download(url, fmt, uid)
+                    with jobs_lock:
+                        jobs[job_id]["status"] = "done"
+                        jobs[job_id]["progress"] = 100
+                        jobs[job_id]["filename"] = filename
+                    return
                 raise
 
-            # Progressive fallbacks:
+            # Progressive fallbacks — try increasingly permissive options:
             # 1. Drop format_sort/height constraints (any codec, any stream).
-            # 2. Retry with iOS player client — iOS doesn't require a YouTube
-            #    Proof-of-Origin token, so it returns a full format list even
-            #    when the default web client comes back empty.
-            # 3. Absolute last resort: bare "best" via iOS client.
+            # 2. Force web_creator client (works without PO token plugin).
+            # 3. Force ios client (last yt-dlp attempt before pytubefix).
+            _yt = _is_youtube(url)
+            _wc_args = {"extractor_args": {"youtube": {"player_client": ["web_creator"]}}}
             _ios_args = {"extractor_args": {"youtube": {"player_client": ["ios"]}}}
             if _FFMPEG_AVAILABLE:
                 fallbacks = [
                     {"format": "bestvideo*+bestaudio*/best", "merge_output_format": "mp4"},
                     {"format": "bestvideo*+bestaudio*/best", "merge_output_format": "mp4",
-                     **(_ios_args if _is_youtube(url) else {})},
-                    {"format": "best", **(_ios_args if _is_youtube(url) else {})},
+                     **(_wc_args if _yt else {})},
+                    {"format": "bestvideo*+bestaudio*/best", "merge_output_format": "mp4",
+                     **(_ios_args if _yt else {})},
+                    {"format": "best", **(_ios_args if _yt else {})},
                 ]
             else:
                 fallbacks = [
                     {"format": "best"},
-                    {"format": "best", **(_ios_args if _is_youtube(url) else {})},
+                    {"format": "best", **(_wc_args if _yt else {})},
+                    {"format": "best", **(_ios_args if _yt else {})},
                 ]
 
             last_err: Exception = exc
@@ -486,11 +507,12 @@ def _download_worker(job_id: str, url: str, fmt: str, quality: str):
 
     except Exception as exc:
         error_msg = str(exc)
-        if _is_requested_format_error(exc):
+        if _is_retriable_format_error(exc):
             hint = _available_format_hint(url)
             extra = (
                 "Try Best quality or retry with updated cookies in Settings. "
-                "The server already retries permissive and iOS-client fallbacks."
+                "All fallback clients (web_creator, ios, pytubefix) were attempted. "
+                "Updating yt-dlp or installing a PO-token plugin may help."
             )
             error_msg = f"{error_msg}. {extra}"
             if hint:
@@ -628,11 +650,12 @@ def _gallerydl_worker(job_id: str, url: str):
 
     except Exception as exc:
         error_msg = str(exc)
-        if _is_requested_format_error(exc):
+        if _is_retriable_format_error(exc):
             hint = _available_format_hint(url)
             extra = (
                 "Try Best quality or retry with updated cookies in Settings. "
-                "The server already retries permissive and iOS-client fallbacks."
+                "All fallback clients (web_creator, ios, pytubefix) were attempted. "
+                "Updating yt-dlp or installing a PO-token plugin may help."
             )
             error_msg = f"{error_msg}. {extra}"
             if hint:
