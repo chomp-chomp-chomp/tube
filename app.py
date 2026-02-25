@@ -140,6 +140,7 @@ def _available_format_hint(url: str) -> str:
             "quiet": True,
             "no_warnings": True,
             "logger": _YDLLogger(),
+            "js_runtimes": {"node": {}},
             "skip_download": True,
             **_cookie_opts(),
         }
@@ -216,6 +217,7 @@ def video_info():
             "quiet": True,
             "no_warnings": True,
             "logger": _YDLLogger(),
+            "js_runtimes": {"node": {}},
             "skip_download": True,
             **_cookie_opts(),
         }
@@ -402,6 +404,7 @@ def _download_worker(job_id: str, url: str, fmt: str, quality: str):
             "quiet": True,
             "no_warnings": True,
             "logger": _YDLLogger(),
+            "js_runtimes": {"node": {}},
             "progress_hooks": [_make_progress_hook(job_id)],
             "max_filesize": max_bytes,
             **_cookie_opts(),
