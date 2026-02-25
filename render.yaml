@@ -5,7 +5,7 @@ services:
     plan: free
     packages:
       - ffmpeg
-    buildCommand: pip install -r requirements.txt
+    buildCommand: pip install --upgrade -r requirements.txt
     startCommand: gunicorn --workers 1 --threads 4 --bind 0.0.0.0:$PORT app:app
     envVars:
       - key: APP_PASSWORD
