@@ -18,6 +18,59 @@ import yt_dlp
 
 load_dotenv()
 
+
+def _patch_pornhub_extractor():
+    """
+    Work around PornHub page-structure changes that break title extraction.
+
+    yt-dlp's PornHubIE raises 'Unable to extract title' when none of its
+    hard-coded regex patterns match the current HTML (the site restructures
+    periodically without updating the extractor).  The video URLs / formats
+    are usually still extracted fine — only the title fails.
+
+    Patch strategy:
+      1. Override _html_search_regex on PornHubIE so that when 'title' is
+         the target name and no default was supplied, it returns None instead
+         of raising RegexNotFoundError.
+      2. Wrap _real_extract so that when title ends up None (merge_dicts won't
+         promote the JSON-LD title over an explicit None), we fall back to the
+         video ID so the download can proceed.
+    """
+    try:
+        from yt_dlp.extractor.pornhub import PornHubIE
+        from yt_dlp.extractor.common import InfoExtractor
+        from yt_dlp.utils import NO_DEFAULT as _NO_DEFAULT
+
+        _orig_html_search_regex = InfoExtractor._html_search_regex
+
+        def _lenient_html_search_regex(self, pattern, string, name,
+                                       default=_NO_DEFAULT, **kwargs):
+            if name == 'title' and default is _NO_DEFAULT:
+                default = None
+            return _orig_html_search_regex(
+                self, pattern, string, name, default=default, **kwargs)
+
+        PornHubIE._html_search_regex = _lenient_html_search_regex
+
+        _orig_real_extract = PornHubIE._real_extract
+
+        def _patched_real_extract(self, url):
+            result = _orig_real_extract(self, url)
+            if result and not result.get('title'):
+                # Title wasn't in the page HTML; fall back to the video ID
+                # (merge_dicts won't promote JSON-LD title over explicit None,
+                #  so we fix it here after the fact).
+                result['title'] = self._match_id(url) or 'unknown'
+            return result
+
+        PornHubIE._real_extract = _patched_real_extract
+        print('[chompy] PornHub extractor patched (lenient title extraction)')
+    except Exception as exc:
+        print(f'[chompy] WARNING: Could not patch PornHub extractor: {exc}')
+
+
+_patch_pornhub_extractor()
+
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", os.urandom(32))
 
