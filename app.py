@@ -52,6 +52,15 @@ else:
 _FFMPEG_AVAILABLE = bool(shutil.which("ffmpeg"))
 print(f"[chompy] ffmpeg: {'found at ' + shutil.which('ffmpeg') if _FFMPEG_AVAILABLE else 'NOT FOUND — merged HD downloads unavailable'}")
 
+# Check PO-token plugin readiness (requires Node.js >= 20 for script mode)
+_NODE_AVAILABLE = bool(shutil.which("node"))
+if _NODE_AVAILABLE:
+    _node_ver = subprocess.run(["node", "--version"], capture_output=True, text=True).stdout.strip()
+    print(f"[chompy] node: found ({_node_ver}) — PO-token plugin can use script provider")
+else:
+    print("[chompy] node: NOT FOUND — PO-token plugin will NOT work. "
+          "YouTube may block most downloads on this IP. Install Node.js >= 20.")
+
 # In-memory job tracker: job_id -> {"status", "progress", "filename", "error"}
 jobs: dict[str, dict] = {}
 jobs_lock = threading.Lock()
@@ -376,16 +385,16 @@ def _download_worker(job_id: str, url: str, fmt: str, quality: str):
                 }],
             }
         else:
+            # Use the * suffix (bv* / ba) so streams that already contain
+            # both tracks are also candidates — maximises the chance of a
+            # match when YouTube returns a limited format list.
             if _FFMPEG_AVAILABLE:
-                # ffmpeg present: use format_sort to prefer mp4/m4a without
-                # requiring them — avoids "Requested format is not available"
-                # on videos that only offer webm/vp9 or opus audio.
                 if quality == "best":
-                    fmt_str = "bestvideo+bestaudio/best"
+                    fmt_str = "bv*+ba/b"
                 else:
                     fmt_str = (
-                        f"bestvideo[height<={quality}]+bestaudio"
-                        f"/best[height<={quality}]/best"
+                        f"bv*[height<={quality}]+ba"
+                        f"/b[height<={quality}]/b"
                     )
                 ydl_opts = {
                     **base_opts,
@@ -395,13 +404,12 @@ def _download_worker(job_id: str, url: str, fmt: str, quality: str):
                     "merge_output_format": "mp4",
                 }
             else:
-                # No ffmpeg: use pre-muxed streams only (≤720p on YouTube).
                 if quality == "best":
-                    fmt_str = "best[ext=mp4]/best"
+                    fmt_str = "b[ext=mp4]/b"
                 else:
                     fmt_str = (
-                        f"best[ext=mp4][height<={quality}]"
-                        f"/best[height<={quality}]/best[ext=mp4]/best"
+                        f"b[ext=mp4][height<={quality}]"
+                        f"/b[height<={quality}]/b[ext=mp4]/b"
                     )
                 ydl_opts = {
                     **base_opts,
@@ -435,27 +443,28 @@ def _download_worker(job_id: str, url: str, fmt: str, quality: str):
                     return
                 raise
 
-            # Progressive fallbacks — try increasingly permissive options:
-            # 1. Drop format_sort/height constraints (any codec, any stream).
-            # 2. Force web_creator client (works without PO token plugin).
-            # 3. Force ios client (last yt-dlp attempt before pytubefix).
+            # Progressive fallbacks — try increasingly permissive options
+            # and YouTube player-clients.  Each client hits a different
+            # YouTube endpoint with different bot-detection behaviour.
             _yt = _is_youtube(url)
-            _wc_args = {"extractor_args": {"youtube": {"player_client": ["web_creator"]}}}
-            _ios_args = {"extractor_args": {"youtube": {"player_client": ["ios"]}}}
+            _client = lambda c: {"extractor_args": {"youtube": {"player_client": [c]}}} if _yt else {}
+            _wild = "bv*+ba/b"
             if _FFMPEG_AVAILABLE:
                 fallbacks = [
-                    {"format": "bestvideo*+bestaudio*/best", "merge_output_format": "mp4"},
-                    {"format": "bestvideo*+bestaudio*/best", "merge_output_format": "mp4",
-                     **(_wc_args if _yt else {})},
-                    {"format": "bestvideo*+bestaudio*/best", "merge_output_format": "mp4",
-                     **(_ios_args if _yt else {})},
-                    {"format": "best", **(_ios_args if _yt else {})},
+                    {"format": _wild, "merge_output_format": "mp4"},
+                    {"format": _wild, "merge_output_format": "mp4", **_client("web_creator")},
+                    {"format": _wild, "merge_output_format": "mp4", **_client("mweb")},
+                    {"format": _wild, "merge_output_format": "mp4", **_client("android")},
+                    {"format": _wild, "merge_output_format": "mp4", **_client("ios")},
+                    {"format": "b", **_client("mweb")},
                 ]
             else:
                 fallbacks = [
-                    {"format": "best"},
-                    {"format": "best", **(_wc_args if _yt else {})},
-                    {"format": "best", **(_ios_args if _yt else {})},
+                    {"format": "b"},
+                    {"format": "b", **_client("web_creator")},
+                    {"format": "b", **_client("mweb")},
+                    {"format": "b", **_client("android")},
+                    {"format": "b", **_client("ios")},
                 ]
 
             last_err: Exception = exc
@@ -510,9 +519,13 @@ def _download_worker(job_id: str, url: str, fmt: str, quality: str):
         if _is_retriable_format_error(exc):
             hint = _available_format_hint(url)
             extra = (
-                "Try Best quality or retry with updated cookies in Settings. "
-                "All fallback clients (web_creator, ios, pytubefix) were attempted. "
-                "Updating yt-dlp or installing a PO-token plugin may help."
+                "All fallback clients (web_creator, mweb, android, ios, pytubefix) "
+                "were attempted. "
+                + ("Node.js is NOT installed — the PO-token plugin cannot run. "
+                   "Install Node.js >= 20 to fix YouTube downloads."
+                   if not _NODE_AVAILABLE else
+                   "The PO-token plugin should be active (Node.js found). "
+                   "Try uploading fresh cookies in Settings or updating yt-dlp.")
             )
             error_msg = f"{error_msg}. {extra}"
             if hint:
@@ -542,13 +555,20 @@ def _pytubefix_download(url: str, fmt: str, uid: str) -> str:
             "Install it manually or check requirements.txt."
         )
 
-    yt = YouTube(url)
+    try:
+        yt = YouTube(url, use_po_token=False)
+    except Exception:
+        # Some pytubefix versions don't accept use_po_token
+        yt = YouTube(url)
     title = _sanitize(yt.title or "video")
 
     if fmt == "mp3":
         stream = yt.streams.get_audio_only()
         if not stream:
-            raise ValueError("pytubefix: no audio stream available")
+            # Try any stream as absolute last resort
+            stream = yt.streams.first()
+        if not stream:
+            raise ValueError("pytubefix: no streams available for this video")
         raw_ext = stream.subtype or "webm"
         raw_name = f"{title} [{uid}].{raw_ext}"
         stream.download(output_path=str(DOWNLOAD_DIR), filename=raw_name)
@@ -565,7 +585,13 @@ def _pytubefix_download(url: str, fmt: str, uid: str) -> str:
     else:
         stream = yt.streams.get_highest_resolution()  # progressive, up to 720p
         if not stream:
-            raise ValueError("pytubefix: no video stream available")
+            # Fall back to any available stream
+            stream = (
+                yt.streams.filter(progressive=True).order_by("resolution").last()
+                or yt.streams.first()
+            )
+        if not stream:
+            raise ValueError("pytubefix: no streams available for this video")
         ext = stream.subtype or "mp4"
         filename = f"{title} [{uid}].{ext}"
         stream.download(output_path=str(DOWNLOAD_DIR), filename=filename)
@@ -653,9 +679,13 @@ def _gallerydl_worker(job_id: str, url: str):
         if _is_retriable_format_error(exc):
             hint = _available_format_hint(url)
             extra = (
-                "Try Best quality or retry with updated cookies in Settings. "
-                "All fallback clients (web_creator, ios, pytubefix) were attempted. "
-                "Updating yt-dlp or installing a PO-token plugin may help."
+                "All fallback clients (web_creator, mweb, android, ios, pytubefix) "
+                "were attempted. "
+                + ("Node.js is NOT installed — the PO-token plugin cannot run. "
+                   "Install Node.js >= 20 to fix YouTube downloads."
+                   if not _NODE_AVAILABLE else
+                   "The PO-token plugin should be active (Node.js found). "
+                   "Try uploading fresh cookies in Settings or updating yt-dlp.")
             )
             error_msg = f"{error_msg}. {extra}"
             if hint:
