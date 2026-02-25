@@ -5,14 +5,8 @@ services:
     plan: free
     packages:
       - ffmpeg
-    buildCommand: >-
-      mkdir -p /opt/render/project/src/.node &&
-      curl -fsSL https://nodejs.org/dist/v20.18.1/node-v20.18.1-linux-x64.tar.xz |
-      tar -xJ --strip-components=1 -C /opt/render/project/src/.node &&
-      /opt/render/project/src/.node/bin/node --version &&
-      pip install -r requirements.txt &&
-      (pip install "pytubefix>=9.0,<10.0" || true)
-    startCommand: PATH=/opt/render/project/src/.node/bin:$PATH gunicorn --workers 1 --threads 4 --bind 0.0.0.0:$PORT app:app
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn --workers 1 --threads 4 --bind 0.0.0.0:$PORT app:app
     envVars:
       - key: APP_PASSWORD
         sync: false          # Set this in the Render dashboard — keep it secret
