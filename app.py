@@ -422,17 +422,42 @@ def _download_worker(job_id: str, url: str, fmt: str, quality: str):
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 ydl.extract_info(url, download=True)
         except Exception as exc:
-            # Some videos don't offer the exact format requested (for example,
-            # a specific container/height combination). Work through
-            # progressively more permissive selectors so downloads still
-            # complete whenever the video is publicly accessible at all.
             if not _is_retriable_format_error(exc):
                 raise
+
+            # ── Diagnose: does YouTube return any REAL formats at all? ──
+            # If bot detection is active, YouTube returns only storyboard
+            # entries and zero actual video/audio streams.  In that case,
+            # retrying with different format strings or player-clients is
+            # pointless — go straight to pytubefix.
+            _yt = _is_youtube(url)
+            _has_real_formats = True  # assume yes for non-YouTube
+            if _yt:
+                try:
+                    with yt_dlp.YoutubeDL(
+                        {**base_opts, "skip_download": True}
+                    ) as probe:
+                        probe_info = probe.extract_info(url, download=False)
+                    avail = probe_info.get("formats") or []
+                    usable = [
+                        f for f in avail
+                        if (f.get("vcodec", "none") != "none"
+                            or f.get("acodec", "none") != "none")
+                    ]
+                    _has_real_formats = bool(usable)
+                    if usable:
+                        print(f"[chompy] {len(usable)} usable formats found "
+                              f"(of {len(avail)} total) — retrying with fallbacks")
+                    else:
+                        print(f"[chompy] 0 usable formats (of {len(avail)} total) "
+                              f"— YouTube bot-detection is active, skipping to pytubefix")
+                except Exception:
+                    pass  # probe failed, try fallbacks anyway
+
             # For MP3, skip format fallbacks (they all use bestaudio/best
             # already) but still fall through to pytubefix below.
             if fmt == "mp3":
-                last_err = exc
-                if _is_youtube(url):
+                if _yt:
                     with jobs_lock:
                         jobs[job_id]["status"] = "downloading"
                     filename = _pytubefix_download(url, fmt, uid)
@@ -443,47 +468,52 @@ def _download_worker(job_id: str, url: str, fmt: str, quality: str):
                     return
                 raise
 
-            # Progressive fallbacks — try increasingly permissive options
-            # and YouTube player-clients.  Each client hits a different
-            # YouTube endpoint with different bot-detection behaviour.
-            _yt = _is_youtube(url)
-            _client = lambda c: {"extractor_args": {"youtube": {"player_client": [c]}}} if _yt else {}
-            _wild = "bv*+ba/b"
-            if _FFMPEG_AVAILABLE:
-                fallbacks = [
-                    {"format": _wild, "merge_output_format": "mp4"},
-                    {"format": _wild, "merge_output_format": "mp4", **_client("web_creator")},
-                    {"format": _wild, "merge_output_format": "mp4", **_client("mweb")},
-                    {"format": _wild, "merge_output_format": "mp4", **_client("android")},
-                    {"format": _wild, "merge_output_format": "mp4", **_client("ios")},
-                    {"format": "b", **_client("mweb")},
-                ]
-            else:
-                fallbacks = [
-                    {"format": "b"},
-                    {"format": "b", **_client("web_creator")},
-                    {"format": "b", **_client("mweb")},
-                    {"format": "b", **_client("android")},
-                    {"format": "b", **_client("ios")},
-                ]
-
+            # ── Fallback loop (only if YouTube gave us real formats) ──
             last_err: Exception = exc
-            for fb_extra in fallbacks:
-                fb_opts = {
-                    **base_opts,
-                    "outtmpl": str(DOWNLOAD_DIR / f"%(title)s [{uid}].%(ext)s"),
-                    **fb_extra,
-                }
-                try:
-                    with yt_dlp.YoutubeDL(fb_opts) as ydl:
-                        ydl.extract_info(url, download=True)
-                    last_err = None
-                    break
-                except Exception as e:
-                    last_err = e
+            if _has_real_formats:
+                _client = lambda c: (
+                    {"extractor_args": {"youtube": {"player_client": [c]}}}
+                    if _yt else {}
+                )
+                _wild = "bv*+ba/b"
+                if _FFMPEG_AVAILABLE:
+                    fallbacks = [
+                        {"format": _wild, "merge_output_format": "mp4"},
+                        {"format": _wild, "merge_output_format": "mp4",
+                         **_client("web_creator")},
+                        {"format": _wild, "merge_output_format": "mp4",
+                         **_client("mweb")},
+                        {"format": _wild, "merge_output_format": "mp4",
+                         **_client("android")},
+                        {"format": "b", **_client("mweb")},
+                    ]
+                else:
+                    fallbacks = [
+                        {"format": "b"},
+                        {"format": "b", **_client("web_creator")},
+                        {"format": "b", **_client("mweb")},
+                        {"format": "b", **_client("android")},
+                    ]
+
+                for fb_extra in fallbacks:
+                    fb_opts = {
+                        **base_opts,
+                        "outtmpl": str(
+                            DOWNLOAD_DIR / f"%(title)s [{uid}].%(ext)s"
+                        ),
+                        **fb_extra,
+                    }
+                    try:
+                        with yt_dlp.YoutubeDL(fb_opts) as ydl:
+                            ydl.extract_info(url, download=True)
+                        last_err = None
+                        break
+                    except Exception as e:
+                        last_err = e
+
             # Last resort: pytubefix uses YouTube's InnerTube API directly
             # and is unaffected by yt-dlp format-selector or PO-token issues.
-            if last_err and _is_youtube(url):
+            if last_err and _yt:
                 with jobs_lock:
                     jobs[job_id]["status"] = "downloading"
                 filename = _pytubefix_download(url, fmt, uid)
