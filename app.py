@@ -232,7 +232,25 @@ def video_info():
         pass  # URL not recognised by yt-dlp — try gallery-dl below
     except Exception as exc:
         if _is_youtube(url):
-            return jsonify({"error": str(exc)}), 400  # YouTube error, surface it
+            # yt-dlp failed (e.g. no JS runtime for signature solving).
+            # Try pytubefix for basic metadata so Preview still works
+            # and the user can hit Download (which also uses pytubefix).
+            try:
+                from pytubefix import YouTube
+                try:
+                    yt = YouTube(url, use_po_token=False)
+                except Exception:
+                    yt = YouTube(url)
+                return jsonify({
+                    "title": yt.title or "Unknown",
+                    "thumbnail": yt.thumbnail_url or "",
+                    "duration": yt.length or 0,
+                    "uploader": yt.author or "",
+                    "tool": "ytdlp",
+                })
+            except Exception:
+                pass  # pytubefix also failed, return original error
+            return jsonify({"error": str(exc)}), 400
         # For non-YouTube URLs (Threads, Instagram, etc.) yt-dlp may recognise
         # the domain but still fail (e.g. auth required).  Save the message and
         # let gallery-dl have a go before giving up.
